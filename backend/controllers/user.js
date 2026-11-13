@@ -101,7 +101,15 @@ async function handleUserLogin(req, res) {
   }
 }
 
+
+//Checks whether a user is Logged In when the Page Reloads
+async function handleGetCurrentUser(req, res) {
+  return res.status(200).json({ user: req.user });
+}
+
+
 module.exports = {
   handleUserSignup,
   handleUserLogin,
+  handleGetCurrentUser,
 };

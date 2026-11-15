@@ -46,7 +46,37 @@ async function acquireSlotLock(slotId, driverId, ttlSeconds = 300) {
   return true;
 }
 
+async function getSlotLockOwner(slotId) {
+  const key = `lock:slot:${slotId}`;
+
+  // Path A: Real Redis
+  if (isRedisReady && redisClient) {
+    return await redisClient.get(key);
+  }
+
+  // Path B: Windows In-Memory Map
+  const existingLock = memoryLocks.get(key);
+  if (!existingLock || existingLock.expiresAt <= Date.now()) {
+    memoryLocks.delete(key); // Clean up expired lock
+    return null;
+  }
+  return existingLock.driverId;
+}
+
+// 2. Delete the temporary lock once booking is confirmed (or cancelled)
+async function releaseSlotLock(slotId) {
+  const key = `lock:slot:${slotId}`;
+
+  if (isRedisReady && redisClient) {
+    await redisClient.del(key);
+  } else {
+    memoryLocks.delete(key);
+  }
+}
+
 module.exports = { 
     connectRedis,
     acquireSlotLock,
+    getSlotLockOwner,
+    releaseSlotLock,
 };

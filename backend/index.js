@@ -3,6 +3,7 @@ const express = require("express");
 const cookieParser = require("cookie-parser");
 const{connectMongoDB} = require("./connection");
 const userRoute = require("./routes/user");
+const slotRoute = require("./routes/slot");
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -19,6 +20,7 @@ app.get("/", (req, res) => {
 
 //Register User Routes
 app.use("/api/user",userRoute);
+app.use("/api/slot", slotRoute);
 
 app.listen(PORT, () => {
   console.log(`Server started on http://localhost:${PORT}`);

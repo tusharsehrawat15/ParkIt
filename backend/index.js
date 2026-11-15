@@ -4,6 +4,7 @@ const cookieParser = require("cookie-parser");
 const{connectMongoDB} = require("./connection");
 const userRoute = require("./routes/user");
 const slotRoute = require("./routes/slot");
+const bookingRoute = require("./routes/booking");
 const { connectRedis } = require("./redis");
 
 const app = express();
@@ -23,6 +24,8 @@ app.get("/", (req, res) => {
 //Register User Routes
 app.use("/api/user",userRoute);
 app.use("/api/slot", slotRoute);
+app.use("/api/booking", bookingRoute);
+
 
 app.listen(PORT, () => {
   console.log(`Server started on http://localhost:${PORT}`);

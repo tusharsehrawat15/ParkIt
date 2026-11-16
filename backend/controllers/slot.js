@@ -113,8 +113,81 @@ async function handleGetOwnerSlots(req, res) {
   }
 }
 
+
+async function handleSyncOwnerServices(req, res) {
+  try {
+    const ownerId = req.user.id;
+    const { slotType, hourlyRate, totalSlots } = req.body; // e.g. slotType: "STANDARD" or "EV"
+
+    if (!slotType || !hourlyRate || totalSlots === undefined) {
+      return res.status(400).json({ error: "Slot type, hourly rate, and total slots are required." });
+    }
+
+    const owner = await User.findById(ownerId);
+    if (!owner || !owner.buildingName) {
+      return res.status(400).json({ error: "Owner building details not found." });
+    }
+
+    // 1. Update hourly rate for all existing slots of this type for this owner
+    await Slot.updateMany(
+      { ownerId, slotType },
+      { $set: { hourlyRate: Number(hourlyRate) } }
+    );
+
+    // 2. Count current slots of this type
+    const currentSlots = await Slot.find({ ownerId, slotType }).sort({ slotNumber: 1 });
+    const currentCount = currentSlots.length;
+
+    if (totalSlots > currentCount) {
+      // 3. Add extra slots if owner increased the count
+      const slotsToAdd = totalSlots - currentCount;
+      const newSlotsData = [];
+      
+      // Find the highest existing slot number index or generate sequentially
+      const nextIndex = currentCount + 1;
+      for (let i = 0; i < slotsToAdd; i++) {
+        const slotNumId = `${slotType === "EV" ? "EV" : "B1"}-${String(nextIndex + i).padStart(2, '0')}`;
+        newSlotsData.push({
+          ownerId,
+          buildingName: owner.buildingName,
+          locality: owner.locality,
+          city: owner.city,
+          buildingType: owner.buildingType,
+          slotNumber: slotNumId,
+          slotType,
+          hourlyRate: Number(hourlyRate),
+          status: "AVAILABLE"
+        });
+      }
+      await Slot.insertMany(newSlotsData);
+    } else if (totalSlots < currentCount) {
+      // 4. Remove unbooked extra slots if owner decreased the count
+      const excessCount = currentCount - totalSlots;
+      // Only remove available slots so we don't delete actively booked bays
+      const availableSlotsToRemove = await Slot.find({ ownerId, slotType, status: "AVAILABLE" })
+        .sort({ slotNumber: -1 })
+        .limit(excessCount);
+
+      const idsToRemove = availableSlotsToRemove.map(s => s._id);
+      if (idsToRemove.length > 0) {
+        await Slot.deleteMany({ _id: { $in: idsToRemove } });
+      }
+    }
+
+    const updatedSlots = await Slot.find({ ownerId, slotType });
+    return res.status(200).json({
+      message: "Building services synced successfully",
+      count: updatedSlots.length,
+      slots: updatedSlots
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+}
+
 module.exports = {
   handleCreateSlot,
   handleGetAllSlots,
   handleGetOwnerSlots,
+  handleSyncOwnerServices,
 };

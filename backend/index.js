@@ -1,3 +1,4 @@
+const path = require("path");
 require("dotenv").config();
 const express = require("express");
 const cookieParser = require("cookie-parser");
@@ -17,9 +18,7 @@ connectRedis();
 app.use(express.json());
 app.use(cookieParser());
 
-app.get("/", (req, res) => {
-  return res.status(200).json({ message: "ParkIt Server is alive!" });
-});
+app.use(express.static(path.join(__dirname, "../frontend")));
 
 //Register User Routes
 app.use("/api/user",userRoute);

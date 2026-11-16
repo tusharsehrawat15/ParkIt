@@ -21,6 +21,14 @@ const bookingSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    locality: {
+      type: String,
+      required: true,
+    },
+    city: {
+      type: String,
+      required: true,
+    },
     slotNumber: {
       type: String,
       required: true,
@@ -44,6 +52,10 @@ const bookingSchema = new mongoose.Schema(
     totalAmount: {
       type: Number,
       default: 0,
+    },
+    estimatedDuration: {
+      type: Number,
+      required: true,
     },
     status: {
       type: String,

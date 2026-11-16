@@ -28,6 +28,19 @@ const userSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    locality: {
+      type: String,
+      default: null,
+    },
+    city: {
+      type: String,
+      default: null,
+    },
+    buildingType: {
+      type: String,
+      enum: ["PARKING", "EV", "BOTH"],
+      default: null,
+    },
   },
   { timestamps: true }
 );

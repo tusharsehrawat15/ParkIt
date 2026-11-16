@@ -46,7 +46,13 @@ async function handleLockSlot(req, res) {
 async function handleConfirmBooking(req, res) {
   try {
     const { slotId } = req.params;
+    const { estimatedDuration } = req.body;
     const driverId = req.user.id;
+
+    // Basic validation
+    if (!estimatedDuration || estimatedDuration <= 0) {
+      return res.status(400).json({ error: "Please select an estimated stay duration." });
+    }
 
     // 1. Check if the 5-minute lock still exists in Redis/Map
     const lockOwnerId = await getSlotLockOwner(slotId);
@@ -80,9 +86,12 @@ async function handleConfirmBooking(req, res) {
       driverId: driver._id,
       ownerId: slot.ownerId,
       buildingName: slot.buildingName,
+      locality: slot.locality,
+      city: slot.city,
       slotNumber: slot.slotNumber,
       vehicleNumber: driver.vehicleNumber,
       hourlyRate: slot.hourlyRate,
+      estimatedDuration: estimatedDuration,
     });
 
     // 5. Mark the physical slot as BOOKED and link it to this driver
@@ -149,8 +158,32 @@ async function handleReleaseSlot(req, res) {
   }
 }
 
+async function handleGetDriverHistory(req, res) {
+  try {
+    const history = await Booking.find({ driverId: req.user.id }).sort({
+      createdAt: -1,
+    });
+    return res.status(200).json({ count: history.length, history });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+}
+
+async function handleGetOwnerHistory(req, res) {
+  try {
+    const history = await Booking.find({ ownerId: req.user.id })
+      .populate("driverId", "name email")
+      .sort({ createdAt: -1 });
+    return res.status(200).json({ count: history.length, history });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+}
+
 module.exports = {
   handleLockSlot,
   handleConfirmBooking,
   handleReleaseSlot,
+  handleGetDriverHistory,
+  handleGetOwnerHistory,
 };

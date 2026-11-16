@@ -11,6 +11,19 @@ const slotSchema = new mongoose.Schema(
       type: String,
       required: true,
     },
+    locality: {
+      type: String,
+      required: true,
+    },
+    city: {
+      type: String,
+      required: true,
+    },
+    buildingType: {
+      type: String,
+      enum: ["PARKING", "EV", "BOTH"],
+      required: true,
+    },
     slotNumber: {
       type: String,
       required: true,

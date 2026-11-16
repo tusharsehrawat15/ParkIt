@@ -6,7 +6,7 @@ const jwt = require("jsonwebtoken");
 //User Sign Up will be handled here.
 async function handleUserSignup(req, res) {
   try {
-    const { name, email, password, role, vehicleNumber, buildingName } = req.body || {};
+    const { name, email, password, role, vehicleNumber, buildingName, locality, city, buildingType } = req.body || {};
 
     // 1. Basic validation: Check if common required fields are missing
     if (!name || !email || !password || !role) {
@@ -17,8 +17,8 @@ async function handleUserSignup(req, res) {
     if (role === "DRIVER" && !vehicleNumber) {
       return res.status(400).json({ error: "Vehicle number is required for Vehicle Owners" });
     }
-    if (role === "OWNER" && !buildingName) {
-      return res.status(400).json({ error: "Building name is required for Parking Owners" });
+    if (role === "OWNER" && (!buildingName || !locality || !city || !buildingType)) {
+      return res.status(400).json({ error: "Building name, Locality, City , and Building Type are required for Parking Owners" });
     }
 
     // 3. Check if email already exists in MongoDB
@@ -38,6 +38,9 @@ async function handleUserSignup(req, res) {
       role,
       vehicleNumber: role === "DRIVER" ? vehicleNumber : null,
       buildingName: role === "OWNER" ? buildingName : null,
+      locality: role === "OWNER" ? locality : null,
+      city: role === "OWNER" ? city : null,
+      buildingType: role === "OWNER" ? buildingType : null,
     });
 
     return res.status(201).json({

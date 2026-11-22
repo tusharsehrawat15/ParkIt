@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ParkIt - Smart Parking</title>
+    <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+
+<body class="min-h-screen flex flex-col items-center justify-center p-4">
+
+    <!-- Brand Header -->
+    <div class="mb-8 text-center">
+        <img src="assets/logo.svg" alt="ParkIt Logo"
+            class="w-16 h-16 mx-auto rounded-2xl border border-emerald-500/40 shadow-[0_0_20px_rgba(16,185,129,0.3)] mb-3">
+        <h1 class="text-3xl font-bold tracking-tight text-white">
+            Park<span class="text-emerald-400">It</span>
+        </h1>
+        <p class="text-sm text-gray-400 mt-1">Smart Parking & EV Charging</p>
+    </div>
+
+    <!-- Auth Card -->
+    <div class="w-full max-w-md glass-card rounded-3xl p-6 sm:p-8">
+
+        <!-- Login / Sign Up Switcher -->
+        <div class="flex rounded-xl bg-gray-900/80 p-1 mb-6 border border-gray-800">
+            <button type="button" id="tabLogin"
+                class="flex-1 py-2.5 text-sm font-semibold rounded-lg bg-emerald-500 text-gray-950 transition-all">
+                Login
+            </button>
+            <button type="button" id="tabSignup"
+                class="flex-1 py-2.5 text-sm font-semibold rounded-lg text-gray-400 hover:text-white transition-all">
+                Sign Up
+            </button>
+        </div>
+
+        <!-- Role Selector -->
+        <div id="roleSection" class="mb-6 hidden">
+            <p class="text-xs uppercase tracking-wider text-gray-400 mb-2 font-medium">I am a</p>
+            <div class="grid grid-cols-2 gap-3">
+                <button type="button" id="roleDriver"
+                    class="py-2.5 px-4 rounded-xl border border-emerald-500 bg-emerald-500/10 text-emerald-400 text-sm font-semibold transition-all">
+                    Driver
+                </button>
+                <button type="button" id="roleOwner"
+                    class="py-2.5 px-4 rounded-xl border border-gray-800 bg-gray-900/50 text-gray-400 text-sm font-semibold hover:text-white transition-all">
+                    Building Owner
+                </button>
+            </div>
+        </div>
+
+        <!-- Auth Form -->
+        <form id="authForm" class="space-y-4">
+
+            <!-- Full Name (Sign Up only — hidden on Login) -->
+            <div id="nameField" class="hidden">
+                <label for="name" class="block text-xs uppercase tracking-wider text-gray-400 mb-1.5 font-medium">Full Name</label>
+                <input type="text" id="name" placeholder="Aarav Sharma"
+                    class="w-full px-4 py-3 rounded-xl bg-gray-900/90 border border-gray-800 text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 transition-colors">
+            </div>
+
+            <!-- Email -->
+            <div>
+                <label for="email" class="block text-xs uppercase tracking-wider text-gray-400 mb-1.5 font-medium">Email Address</label>
+                <input type="email" id="email" required placeholder="name@example.com"
+                    class="w-full px-4 py-3 rounded-xl bg-gray-900/90 border border-gray-800 text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 transition-colors">
+            </div>
+
+            <!-- Password -->
+            <div>
+                <label for="password" class="block text-xs uppercase tracking-wider text-gray-400 mb-1.5 font-medium">Password</label>
+                <input type="password" id="password" required placeholder="••••••••"
+                    class="w-full px-4 py-3 rounded-xl bg-gray-900/90 border border-gray-800 text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 transition-colors">
+            </div>
+
+            <!-- Driver-Only Fields (hidden by default) -->
+            <div id="driverFields" class="hidden space-y-4">
+                <div>
+                    <label for="vehicleNumber" class="block text-xs uppercase tracking-wider text-gray-400 mb-1.5 font-medium">Vehicle Number</label>
+                    <input type="text" id="vehicleNumber" placeholder="HR-10-AM-1234"
+                        class="w-full px-4 py-3 rounded-xl bg-gray-900/90 border border-gray-800 text-white placeholder-gray-600 uppercase focus:outline-none focus:border-emerald-500 transition-colors">
+                </div>
+            </div>
+
+            <!-- Owner-Only Fields (hidden by default) -->
+            <div id="ownerFields" class="hidden space-y-4">
+                <div>
+                    <label for="buildingName" class="block text-xs uppercase tracking-wider text-gray-400 mb-1.5 font-medium">Building / Complex Name</label>
+                    <input type="text" id="buildingName" placeholder="CyberHub Tower B"
+                        class="w-full px-4 py-3 rounded-xl bg-gray-900/90 border border-gray-800 text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 transition-colors">
+                </div>
+
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label for="locality" class="block text-xs uppercase tracking-wider text-gray-400 mb-1.5 font-medium">Locality</label>
+                        <input type="text" id="locality" placeholder="DLF Phase 2"
+                            class="w-full px-4 py-3 rounded-xl bg-gray-900/90 border border-gray-800 text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 transition-colors">
+                    </div>
+                    <div>
+                        <label for="city" class="block text-xs uppercase tracking-wider text-gray-400 mb-1.5 font-medium">City</label>
+                        <input type="text" id="city" placeholder="Gurugram"
+                            class="w-full px-4 py-3 rounded-xl bg-gray-900/90 border border-gray-800 text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 transition-colors">
+                    </div>
+                </div>
+
+                <div>
+                    <label for="buildingType" class="block text-xs uppercase tracking-wider text-gray-400 mb-1.5 font-medium">Service Provided</label>
+                    <select id="buildingType"
+                        class="w-full px-4 py-3 rounded-xl bg-gray-900/90 border border-gray-800 text-white focus:outline-none focus:border-emerald-500 transition-colors">
+                        <option value="PARKING">Parking Only</option>
+                        <option value="EV">EV Charging Only</option>
+                        <option value="BOTH">Both Parking & EV Charging</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Error Message (hidden by default) -->
+            <p id="errorMsg" class="hidden text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-2.5 text-center"></p>
+
+            <!-- Submit Button -->
+            <button type="submit" id="submitBtn"
+                class="w-full py-3.5 mt-2 rounded-xl glow-btn text-gray-950 font-bold tracking-wide">
+                Login to ParkIt
+            </button>
+
+        </form>
+
+    </div>
+
+    <script src="js/auth.js"></script>
+
+</body>
+
+</html>

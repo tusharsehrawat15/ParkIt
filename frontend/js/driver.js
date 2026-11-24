@@ -35,11 +35,15 @@ tabs.activity.btn.addEventListener("click", () => switchTab("activity"));
 tabs.account.btn.addEventListener("click", () => switchTab("account"));
 
 // ==========================================
-// 2. State & Elements
+// 2. State, Socket & Elements
 // ==========================================
 let currentDriver = null;
 let allBuildings = [];
+let waitlistCounts = {};
+let maxWaitlist = 5;
 let activeFilter = "ALL"; // ALL | STANDARD | EV
+
+const socket = io();
 
 const searchInput = document.getElementById("searchInput");
 const buildingsList = document.getElementById("buildingsList");
@@ -50,30 +54,116 @@ const activePillClass = "filter-pill px-4 py-2 rounded-xl text-xs font-semibold 
 const inactivePillClass = "filter-pill px-4 py-2 rounded-xl text-xs font-semibold bg-gray-900/80 border border-gray-800 text-gray-300 hover:border-gray-600 transition-all";
 
 // ==========================================
-// 3. Helper: Format Estimated Wait Time
+// 3. Toast & Notifications Dropdown
+// ==========================================
+const notifBtn = document.getElementById("notifBtn");
+const notifDot = document.getElementById("notifDot");
+const notifDropdown = document.getElementById("notifDropdown");
+const notifList = document.getElementById("notifList");
+const liveToast = document.getElementById("liveToast");
+const toastTitle = document.getElementById("toastTitle");
+const toastMsg = document.getElementById("toastMsg");
+let toastTimer = null;
+
+function showToast(title, message) {
+  toastTitle.textContent = title;
+  toastMsg.textContent = message;
+  liveToast.classList.remove("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => liveToast.classList.add("hidden"), 4500);
+}
+
+function formatTimeAgo(dateStr) {
+  const diffSecs = Math.max(0, Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000));
+  if (diffSecs < 60) return "Just now";
+  const mins = Math.floor(diffSecs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
+async function loadNotifications() {
+  try {
+    const res = await fetch("/api/notification");
+    if (!res.ok) return;
+
+    const { unreadCount, notifications } = await res.json();
+    if (unreadCount > 0) notifDot.classList.remove("hidden");
+    else notifDot.classList.add("hidden");
+
+    if (!notifications || notifications.length === 0) {
+      notifList.innerHTML = `<p class="p-4 text-center text-xs text-gray-500">No notifications yet.</p>`;
+      return;
+    }
+
+    notifList.innerHTML = notifications
+      .map((n) => `
+        <div class="px-4 py-3 ${n.isRead ? "opacity-75" : "bg-emerald-500/5"}">
+          <div class="flex items-center justify-between gap-2">
+            <p class="text-xs font-bold text-white">${n.title}</p>
+            <span class="text-[10px] text-gray-500 shrink-0">${formatTimeAgo(n.createdAt)}</span>
+          </div>
+          <p class="text-[11px] text-gray-300 mt-0.5 leading-relaxed">${n.message}</p>
+        </div>
+      `)
+      .join("");
+  } catch (err) {
+    console.error("Failed to load notifications:", err);
+  }
+}
+
+notifBtn.addEventListener("click", async (e) => {
+  e.stopPropagation();
+  const willOpen = notifDropdown.classList.contains("hidden");
+  notifDropdown.classList.toggle("hidden");
+
+  if (willOpen) {
+    await loadNotifications();
+    if (!notifDot.classList.contains("hidden")) {
+      notifDot.classList.add("hidden");
+      fetch("/api/notification/read-all", { method: "PATCH" }).catch(() => {});
+    }
+  }
+});
+
+document.addEventListener("click", (e) => {
+  if (!notifDropdown.classList.contains("hidden") && !notifDropdown.contains(e.target) && e.target !== notifBtn) {
+    notifDropdown.classList.add("hidden");
+  }
+});
+
+// ==========================================
+// 4. Load & Render Buildings + Waitlist Counts
 // ==========================================
 function formatWaitTime(nextEndMs) {
-  if (!nextEndMs) return "Full";
+  if (!nextEndMs) return "Full • Join Waitlist";
   const diffMs = Math.max(0, nextEndMs - Date.now());
   const totalMins = Math.max(1, Math.ceil(diffMs / 60000));
   const hrs = String(Math.floor(totalMins / 60)).padStart(2, "0");
   const mins = String(totalMins % 60).padStart(2, "0");
-  return `Estimated Time: ${hrs}:${mins} hr`;
+  return `Est. ${hrs}:${mins} hr`;
 }
 
-// ==========================================
-// 4. Load & Group Slots by Building
-// ==========================================
 async function loadBuildings() {
   try {
     const query = searchInput.value.trim();
     const url = query ? `/api/slot?search=${encodeURIComponent(query)}` : "/api/slot";
-    const res = await fetch(url);
-    if (!res.ok) return;
 
-    const { slots } = await res.json();
+    const [slotRes, countRes] = await Promise.all([
+      fetch(url),
+      fetch("/api/waitlist/building-counts"),
+    ]);
 
-    // Group individual slots into building cards
+    if (!slotRes.ok) return;
+    const { slots } = await slotRes.json();
+
+    if (countRes.ok) {
+      const countData = await countRes.json();
+      waitlistCounts = countData.counts || {};
+      maxWaitlist = countData.maxWaitlist || 5;
+    }
+
     const map = new Map();
     slots.forEach((slot) => {
       const key = slot.ownerId;
@@ -95,13 +185,21 @@ async function loadBuildings() {
 
     allBuildings = Array.from(map.values());
     renderBuildings();
+
+    // Keep modal fresh if currently open
+    if (selectedBuilding && !bookingModal.classList.contains("hidden")) {
+      const updated = allBuildings.find((item) => item.ownerId === selectedBuilding.ownerId);
+      if (updated) {
+        selectedBuilding = updated;
+        refreshModalUI();
+      }
+    }
   } catch (err) {
     console.error("Failed to load buildings:", err);
   }
 }
 
 function renderBuildings() {
-  // Apply filter pill
   const filtered = allBuildings.filter((b) => {
     if (activeFilter === "STANDARD") return b.standardSlots.length > 0;
     if (activeFilter === "EV") return b.evSlots.length > 0;
@@ -111,16 +209,12 @@ function renderBuildings() {
   buildingsCount.textContent = `${filtered.length} found`;
 
   if (filtered.length === 0) {
-    buildingsList.innerHTML = `
-      <div class="glass-card rounded-2xl p-6 text-center text-xs text-gray-500">
-        No matching locations found.
-      </div>`;
+    buildingsList.innerHTML = `<div class="glass-card rounded-2xl p-6 text-center text-xs text-gray-500">No matching locations found.</div>`;
     return;
   }
 
   buildingsList.innerHTML = filtered
     .map((b) => {
-      // Total available based on current filter
       const relevantSlots =
         activeFilter === "STANDARD"
           ? b.standardSlots
@@ -130,7 +224,6 @@ function renderBuildings() {
 
       const openCount = relevantSlots.filter((s) => s.status === "AVAILABLE").length;
 
-      // Price tags
       const prices = [];
       if (b.standardSlots.length > 0) {
         prices.push(`Parking <span class="text-emerald-400 font-semibold">₹${b.standardSlots[0].hourlyRate}</span>/hr`);
@@ -139,7 +232,6 @@ function renderBuildings() {
         prices.push(`EV <span class="text-emerald-400 font-semibold">₹${b.evSlots[0].hourlyRate}</span>/hr`);
       }
 
-      // Status pill: show open count OR Estimated Wait Time when 0
       let statusBadge = "";
       if (openCount > 0) {
         statusBadge = `
@@ -173,7 +265,6 @@ function renderBuildings() {
     .join("");
 }
 
-// Filter pill click listeners
 filterPills.forEach((pill) => {
   pill.addEventListener("click", () => {
     activeFilter = pill.dataset.filter;
@@ -182,158 +273,169 @@ filterPills.forEach((pill) => {
   });
 });
 
-// Live search with small debounce
 let searchTimer;
 searchInput.addEventListener("input", () => {
   clearTimeout(searchTimer);
   searchTimer = setTimeout(loadBuildings, 250);
 });
 
-document.getElementById("refreshFeedBtn").addEventListener("click", loadBuildings);
-
 // ==========================================
-// 5. Auth Guard & Init
-// ==========================================
-async function initDriverApp() {
-  try {
-    const res = await fetch("/api/user/me");
-    if (!res.ok) {
-      window.location.href = "/index.html";
-      return;
-    }
-
-    const { user } = await res.json();
-    if (user.role !== "DRIVER") {
-      window.location.href = "/owner.html";
-      return;
-    }
-
-    currentDriver = user;
-    populateDriverAccount(user);
-    await loadBuildings();
-    await loadDriverActivity();
-    setInterval(loadBuildings, 15000);
-  } catch (err) {
-    console.error("Failed to initialize driver app:", err);
-  }
-}
-
-// ==========================================
-// 6. Booking Modal (Service, Duration & Confirm)
+// 5. Booking & Waitlist Modal
 // ==========================================
 let selectedBuilding = null;
-let selectedServiceType = "STANDARD"; // STANDARD | EV
-let selectedDuration = 1; // in hours
+let selectedServiceType = "STANDARD";
+let selectedDuration = 1;
 
 const bookingModal = document.getElementById("bookingModal");
 const closeBookingModal = document.getElementById("closeBookingModal");
 const selectServiceParking = document.getElementById("selectServiceParking");
 const selectServiceEv = document.getElementById("selectServiceEv");
 const durationPills = document.querySelectorAll(".duration-pill");
+const directBookingSection = document.getElementById("directBookingSection");
+const waitlistBookingSection = document.getElementById("waitlistBookingSection");
 const bookingErrorMsg = document.getElementById("bookingErrorMsg");
 const confirmBookingBtn = document.getElementById("confirmBookingBtn");
+const joinWaitlistBtn = document.getElementById("joinWaitlistBtn");
 
 const activeServiceClass = "glass-card rounded-2xl p-4 text-center space-y-1.5 border border-emerald-500 bg-emerald-500/10 transition-all";
 const inactiveServiceClass = "glass-card rounded-2xl p-4 text-center space-y-1.5 border border-gray-800 hover:border-gray-600 transition-all";
-const disabledServiceClass = "glass-card rounded-2xl p-4 text-center space-y-1.5 border border-gray-800 opacity-40 cursor-not-allowed";
+const disabledServiceClass = "glass-card rounded-2xl p-4 text-center space-y-1.5 border border-gray-800 opacity-35 cursor-not-allowed";
 
 const activeDurClass = "duration-pill py-2.5 rounded-xl text-xs font-semibold bg-emerald-500 text-gray-950 transition-all";
 const inactiveDurClass = "duration-pill py-2.5 rounded-xl text-xs font-semibold bg-gray-900/80 border border-gray-800 text-gray-300 hover:border-gray-600 transition-all";
 
-function updateBookingSummary() {
+function refreshModalUI() {
   if (!selectedBuilding) return;
 
+  const b = selectedBuilding;
+  const stdHasService = b.standardSlots.length > 0;
+  const evHasService = b.evSlots.length > 0;
+
+  const stdOpen = b.standardSlots.filter((s) => s.status === "AVAILABLE").length;
+  const evOpen = b.evSlots.filter((s) => s.status === "AVAILABLE").length;
+  const totalOpen = stdOpen + evOpen;
+
+  // Header badge
+  document.getElementById("modalBuildingName").textContent = b.buildingName;
+  document.getElementById("modalBuildingLoc").textContent = `📍 ${b.locality}, ${b.city}`;
+  const badgeEl = document.getElementById("modalSlotsBadge");
+  if (totalOpen > 0) {
+    badgeEl.textContent = `● ${totalOpen} ${totalOpen === 1 ? "Slot" : "Slots"} Open`;
+    badgeEl.className = "text-[11px] font-semibold px-3 py-1 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/40 shrink-0";
+  } else {
+    badgeEl.textContent = "Full • Waitlist";
+    badgeEl.className = "text-[11px] font-semibold px-3 py-1 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/40 shrink-0";
+  }
+
+  // Service buttons (enabled as long as the building offers that service)
+  document.getElementById("modalParkingRate").textContent = stdHasService ? `₹${b.standardSlots[0].hourlyRate} /hr` : "N/A";
+  document.getElementById("modalParkingAvail").textContent = stdHasService ? (stdOpen > 0 ? `${stdOpen} open` : "Full (Waitlist)") : "Unavailable";
+
+  document.getElementById("modalEvRate").textContent = evHasService ? `₹${b.evSlots[0].hourlyRate} /hr` : "N/A";
+  document.getElementById("modalEvAvail").textContent = evHasService ? (evOpen > 0 ? `${evOpen} open` : "Full (Waitlist)") : "Unavailable";
+
+  selectServiceParking.disabled = !stdHasService;
+  selectServiceEv.disabled = !evHasService;
+
+  selectServiceParking.className = !stdHasService
+    ? disabledServiceClass
+    : selectedServiceType === "STANDARD"
+    ? activeServiceClass
+    : inactiveServiceClass;
+
+  selectServiceEv.className = !evHasService
+    ? disabledServiceClass
+    : selectedServiceType === "EV"
+    ? activeServiceClass
+    : inactiveServiceClass;
+
+  // Toggle between Direct Booking vs Waitlist Mode based on selected service
   const isEv = selectedServiceType === "EV";
-  const slots = isEv ? selectedBuilding.evSlots : selectedBuilding.standardSlots;
-  const rate = slots.length > 0 ? slots[0].hourlyRate : 0;
-  const total = Math.round(rate * selectedDuration);
+  const selectedSlots = isEv ? b.evSlots : b.standardSlots;
+  const selectedOpen = selectedSlots.filter((s) => s.status === "AVAILABLE").length;
 
-  document.getElementById("summaryPlate").textContent = currentDriver?.vehicleNumber || "--";
-  document.getElementById("summaryService").textContent = isEv ? "EV Charging" : "Parking";
-  document.getElementById("summaryDuration").textContent =
-    selectedDuration < 1 ? `${Math.round(selectedDuration * 60)} mins` : selectedDuration === 1 ? "1 hr" : `${selectedDuration} hrs`;
-  document.getElementById("summaryTotal").textContent = `₹${total}`;
-}
+  if (selectedOpen > 0) {
+    document.getElementById("modalTitle").textContent = "Book a Slot";
+    directBookingSection.classList.remove("hidden");
+    waitlistBookingSection.classList.add("hidden");
 
-function updateServiceCardsUI() {
-  if (!selectedBuilding) return;
+    const rate = selectedSlots[0]?.hourlyRate || 0;
+    document.getElementById("summaryPlate").textContent = currentDriver?.vehicleNumber || "--";
+    document.getElementById("summaryService").textContent = isEv ? "EV Charging" : "Parking";
+    document.getElementById("summaryDuration").textContent =
+      selectedDuration < 1 ? `${Math.round(selectedDuration * 60)} mins` : selectedDuration === 1 ? "1 hr" : `${selectedDuration} hrs`;
+    document.getElementById("summaryTotal").textContent = `₹${Math.round(rate * selectedDuration)}`;
+  } else {
+    document.getElementById("modalTitle").textContent = "Join Waitlist";
+    directBookingSection.classList.add("hidden");
+    waitlistBookingSection.classList.remove("hidden");
 
-  const stdOpen = selectedBuilding.standardSlots.filter((s) => s.status === "AVAILABLE").length;
-  const evOpen = selectedBuilding.evSlots.filter((s) => s.status === "AVAILABLE").length;
+    const queueKey = `${b.ownerId}_${selectedServiceType}`;
+    const waitingNow = waitlistCounts[queueKey] || 0;
+    const isQueueFull = waitingNow >= maxWaitlist;
 
-  selectServiceParking.disabled = stdOpen === 0;
-  selectServiceEv.disabled = evOpen === 0;
+    document.getElementById("modalWaitlistQueueBadge").textContent = `${waitingNow} / ${maxWaitlist} waiting`;
 
-  selectServiceParking.className =
-    stdOpen === 0 ? disabledServiceClass : selectedServiceType === "STANDARD" ? activeServiceClass : inactiveServiceClass;
+    const bookedEndTimes = selectedSlots
+      .filter((s) => s.status === "BOOKED" && s.scheduledEndTime)
+      .map((s) => s.scheduledEndTime);
+    const soonest = bookedEndTimes.length > 0 ? Math.min(...bookedEndTimes) : null;
+    document.getElementById("modalWaitlistEstimate").textContent = soonest
+      ? `Estimated next opening: ${formatWaitTime(soonest)}`
+      : "A slot will be held for you as soon as one opens.";
 
-  selectServiceEv.className =
-    evOpen === 0 ? disabledServiceClass : selectedServiceType === "EV" ? activeServiceClass : inactiveServiceClass;
-
-  updateBookingSummary();
+    joinWaitlistBtn.disabled = isQueueFull;
+    joinWaitlistBtn.textContent = isQueueFull
+      ? `Waitlist Full (${maxWaitlist}/${maxWaitlist})`
+      : `Join ${isEv ? "EV" : "Parking"} Waitlist (${waitingNow}/${maxWaitlist})`;
+  }
 }
 
 function openBookingModal(ownerId) {
   const b = allBuildings.find((item) => item.ownerId === ownerId);
   if (!b) return;
 
+  selectedBuilding = b;
   const stdOpen = b.standardSlots.filter((s) => s.status === "AVAILABLE").length;
   const evOpen = b.evSlots.filter((s) => s.status === "AVAILABLE").length;
-  const totalOpen = stdOpen + evOpen;
 
-  if (totalOpen === 0) return; // Building is full
+  // Smart default: pick a service with open slots, otherwise whichever service exists
+  if (stdOpen > 0) selectedServiceType = "STANDARD";
+  else if (evOpen > 0) selectedServiceType = "EV";
+  else if (b.standardSlots.length > 0) selectedServiceType = "STANDARD";
+  else selectedServiceType = "EV";
 
-  selectedBuilding = b;
-  selectedServiceType = stdOpen > 0 ? "STANDARD" : "EV";
   selectedDuration = 1;
   bookingErrorMsg.classList.add("hidden");
 
-  // Populate building header
-  document.getElementById("modalBuildingName").textContent = b.buildingName;
-  document.getElementById("modalBuildingLoc").textContent = `📍 ${b.locality}, ${b.city}`;
-  document.getElementById("modalSlotsBadge").textContent = `● ${totalOpen} ${totalOpen === 1 ? "Slot" : "Slots"} Open`;
-
-  // Populate service cards
-  document.getElementById("modalParkingRate").textContent =
-    b.standardSlots.length > 0 ? `₹${b.standardSlots[0].hourlyRate} /hr` : "N/A";
-  document.getElementById("modalParkingAvail").textContent = `${stdOpen} open`;
-
-  document.getElementById("modalEvRate").textContent =
-    b.evSlots.length > 0 ? `₹${b.evSlots[0].hourlyRate} /hr` : "N/A";
-  document.getElementById("modalEvAvail").textContent = `${evOpen} open`;
-
-  // Reset duration pills to 1 hr
   durationPills.forEach((p) => {
     p.className = Number(p.dataset.hours) === 1 ? activeDurClass : inactiveDurClass;
   });
 
-  updateServiceCardsUI();
+  refreshModalUI();
   bookingModal.classList.remove("hidden");
 }
 
-// Open modal when any building card is clicked
 buildingsList.addEventListener("click", (e) => {
   const card = e.target.closest(".building-card");
-  if (card) {
-    openBookingModal(card.dataset.ownerId);
-  }
+  if (card) openBookingModal(card.dataset.ownerId);
 });
 
-closeBookingModal.addEventListener("click", () => {
-  bookingModal.classList.add("hidden");
-});
+closeBookingModal.addEventListener("click", () => bookingModal.classList.add("hidden"));
 
 selectServiceParking.addEventListener("click", () => {
   if (!selectServiceParking.disabled) {
     selectedServiceType = "STANDARD";
-    updateServiceCardsUI();
+    bookingErrorMsg.classList.add("hidden");
+    refreshModalUI();
   }
 });
 
 selectServiceEv.addEventListener("click", () => {
   if (!selectServiceEv.disabled) {
     selectedServiceType = "EV";
-    updateServiceCardsUI();
+    bookingErrorMsg.classList.add("hidden");
+    refreshModalUI();
   }
 });
 
@@ -341,12 +443,11 @@ durationPills.forEach((pill) => {
   pill.addEventListener("click", () => {
     selectedDuration = Number(pill.dataset.hours);
     durationPills.forEach((p) => (p.className = p === pill ? activeDurClass : inactiveDurClass));
-    updateBookingSummary();
+    refreshModalUI();
   });
 });
 
-// Confirm & Book Slot (Step 1: Lock in Redis → Step 2: Confirm in MongoDB)
-// Confirm & Book Slot (Auto-retries next available bay on 409 collision)
+// Direct Booking (with 409 collision auto-retry across available bays)
 confirmBookingBtn.addEventListener("click", async () => {
   if (!selectedBuilding) return;
 
@@ -354,8 +455,9 @@ confirmBookingBtn.addEventListener("click", async () => {
   const availableSlots = targetList.filter((s) => s.status === "AVAILABLE");
 
   if (availableSlots.length === 0) {
-    bookingErrorMsg.textContent = "No available slots left for this service.";
+    bookingErrorMsg.textContent = "No available slots left. Try joining the waitlist.";
     bookingErrorMsg.classList.remove("hidden");
+    await loadBuildings();
     return;
   }
 
@@ -367,7 +469,6 @@ confirmBookingBtn.addEventListener("click", async () => {
     let lockedSlot = null;
     let lastError = "Could not lock slot.";
 
-    // 1. Try locking available slots one-by-one in case another driver grabbed the first one
     for (const slot of availableSlots) {
       const lockRes = await fetch(`/api/booking/lock/${slot._id}`, { method: "POST" });
       const lockData = await lockRes.json();
@@ -378,10 +479,7 @@ confirmBookingBtn.addEventListener("click", async () => {
       }
 
       lastError = lockData.error || lastError;
-      // Stop immediately if the driver already has an active session
-      if (lastError.includes("already have an active session")) {
-        break;
-      }
+      if (lastError.includes("already have an active session")) break;
     }
 
     if (!lockedSlot) {
@@ -391,23 +489,21 @@ confirmBookingBtn.addEventListener("click", async () => {
       return;
     }
 
-    // 2. Confirm the booking on the locked slot
     const confirmRes = await fetch(`/api/booking/confirm/${lockedSlot._id}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ estimatedDuration: selectedDuration }),
     });
     const confirmData = await confirmRes.json();
+
     if (!confirmRes.ok) {
       bookingErrorMsg.textContent = confirmData.error || "Could not confirm booking.";
       bookingErrorMsg.classList.remove("hidden");
       return;
     }
 
-    // Success → close modal, refresh feed & activity, switch to Activity tab
     bookingModal.classList.add("hidden");
-    await loadBuildings();
-    await loadDriverActivity();
+    await Promise.all([loadBuildings(), loadDriverActivity(), loadDriverWaitlist()]);
     switchTab("activity");
   } catch (err) {
     bookingErrorMsg.textContent = "Network error while booking.";
@@ -417,6 +513,230 @@ confirmBookingBtn.addEventListener("click", async () => {
     confirmBookingBtn.textContent = "Confirm & Book Slot";
   }
 });
+
+// Join Waitlist handler
+joinWaitlistBtn.addEventListener("click", async () => {
+  if (!selectedBuilding) return;
+
+  joinWaitlistBtn.disabled = true;
+  joinWaitlistBtn.textContent = "Joining waitlist...";
+  bookingErrorMsg.classList.add("hidden");
+
+  try {
+    const res = await fetch("/api/waitlist/join", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ownerId: selectedBuilding.ownerId,
+        slotType: selectedServiceType,
+      }),
+    });
+    const data = await res.json();
+
+    if (!res.ok) {
+      bookingErrorMsg.textContent = data.error || "Could not join waitlist.";
+      bookingErrorMsg.classList.remove("hidden");
+      await loadBuildings();
+      return;
+    }
+
+    bookingModal.classList.add("hidden");
+    showToast("Waitlist Joined", data.message);
+    await Promise.all([loadBuildings(), loadDriverWaitlist()]);
+    switchTab("activity");
+  } catch (err) {
+    bookingErrorMsg.textContent = "Network error while joining waitlist.";
+    bookingErrorMsg.classList.remove("hidden");
+  } finally {
+    joinWaitlistBtn.disabled = false;
+    refreshModalUI();
+  }
+});
+
+// ==========================================
+// 6. Activity Tab: Waitlist Card (WAITING / READY)
+// ==========================================
+let waitlistCountdownInterval = null;
+const waitlistSessionWrapper = document.getElementById("waitlistSessionWrapper");
+const waitlistSessionContainer = document.getElementById("waitlistSessionContainer");
+
+function startWaitlistOfferTimer(expiresAt) {
+  if (waitlistCountdownInterval) clearInterval(waitlistCountdownInterval);
+
+  const tick = () => {
+    const el = document.getElementById("waitlistOfferTimer");
+    if (!el) return;
+
+    const diffMs = new Date(expiresAt).getTime() - Date.now();
+    if (diffMs <= 0) {
+      el.textContent = "Expired";
+      clearInterval(waitlistCountdownInterval);
+      loadDriverWaitlist();
+      return;
+    }
+    const secs = Math.floor(diffMs / 1000);
+    const m = String(Math.floor(secs / 60)).padStart(2, "0");
+    const s = String(secs % 60).padStart(2, "0");
+    el.textContent = `${m}:${s}`;
+  };
+
+  tick();
+  waitlistCountdownInterval = setInterval(tick, 1000);
+}
+
+async function handleLeaveWaitlist(btn) {
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "Leaving...";
+  }
+  try {
+    const res = await fetch("/api/waitlist/leave", { method: "DELETE" });
+    if (res.ok) {
+      showActivityMessage("Removed from waitlist.", false);
+      await Promise.all([loadDriverWaitlist(), loadBuildings()]);
+    }
+  } catch (err) {
+    showActivityMessage("Failed to leave waitlist.", true);
+  }
+}
+
+async function loadDriverWaitlist() {
+  try {
+    const res = await fetch("/api/waitlist/my-status");
+    if (!res.ok) return;
+
+    const { entry, position, maxWaitlist: maxCap } = await res.json();
+
+    if (!entry) {
+      if (waitlistCountdownInterval) clearInterval(waitlistCountdownInterval);
+      waitlistSessionWrapper.classList.add("hidden");
+      waitlistSessionContainer.innerHTML = "";
+      return;
+    }
+
+    waitlistSessionWrapper.classList.remove("hidden");
+    const isEv = entry.slotType === "EV";
+    const serviceLabel = isEv ? "⚡ EV Charging" : "🚗 Parking";
+
+    if (entry.status === "WAITING") {
+      if (waitlistCountdownInterval) clearInterval(waitlistCountdownInterval);
+      waitlistSessionContainer.innerHTML = `
+        <div class="glass-card rounded-2xl p-5 border border-amber-500/40 space-y-3.5">
+          <div class="flex items-start justify-between gap-2 pb-3 border-b border-gray-800/80">
+            <div class="min-w-0">
+              <h3 class="text-base font-bold text-white truncate">${entry.buildingName}</h3>
+              <p class="text-xs text-gray-400 mt-0.5 truncate">📍 ${entry.locality}, ${entry.city}</p>
+            </div>
+            <span class="text-[10px] font-bold px-2.5 py-1 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/40 shrink-0">
+              POSITION #${position} / ${maxCap || 5}
+            </span>
+          </div>
+
+          <p class="text-xs text-gray-300">Service: <span class="font-semibold text-white">${serviceLabel}</span></p>
+          <p class="text-[11px] text-gray-400">You'll get an instant notification the moment a slot opens up.</p>
+
+          <button type="button" id="leaveWaitlistBtn"
+            class="w-full py-2.5 rounded-xl bg-red-500/10 border border-red-500/40 text-red-400 font-semibold text-xs hover:bg-red-500/20 transition-all">
+            Leave Waitlist
+          </button>
+        </div>`;
+
+      document.getElementById("leaveWaitlistBtn").addEventListener("click", (e) => {
+        handleLeaveWaitlist(e.currentTarget);
+      });
+    } else if (entry.status === "READY") {
+      const slotId = entry.assignedSlotId?._id || entry.assignedSlotId;
+      const slotNumber = entry.assignedSlotId?.slotNumber || "";
+      const rate = entry.assignedSlotId?.hourlyRate || 0;
+
+      waitlistSessionContainer.innerHTML = `
+        <div class="glass-card rounded-2xl p-5 border border-emerald-500 shadow-[0_0_25px_rgba(16,185,129,0.2)] space-y-4">
+          <div class="flex items-start justify-between gap-2 pb-3 border-b border-gray-800/80">
+            <div class="min-w-0">
+              <h3 class="text-base font-bold text-white truncate">${entry.buildingName}</h3>
+              <p class="text-xs text-gray-400 mt-0.5 truncate">${serviceLabel} • ₹${rate}/hr</p>
+            </div>
+            <span class="text-[10px] font-bold px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500 shrink-0">
+              SLOT READY
+            </span>
+          </div>
+
+          <div class="flex items-center justify-between text-xs">
+            <span class="text-gray-300">Confirm within:</span>
+            <span id="waitlistOfferTimer" class="text-lg font-extrabold text-emerald-400">05:00</span>
+          </div>
+
+          <div class="space-y-2">
+            <p class="text-xs text-gray-400">Select Stay Duration:</p>
+            <div class="grid grid-cols-4 gap-2">
+              <button type="button" data-whours="0.5" class="ready-dur-pill py-2 rounded-xl text-xs font-semibold bg-gray-900 border border-gray-800 text-gray-300">30m</button>
+              <button type="button" data-whours="1" class="ready-dur-pill py-2 rounded-xl text-xs font-semibold bg-emerald-500 text-gray-950">1 hr</button>
+              <button type="button" data-whours="2" class="ready-dur-pill py-2 rounded-xl text-xs font-semibold bg-gray-900 border border-gray-800 text-gray-300">2 hrs</button>
+              <button type="button" data-whours="4" class="ready-dur-pill py-2 rounded-xl text-xs font-semibold bg-gray-900 border border-gray-800 text-gray-300">4 hrs</button>
+            </div>
+          </div>
+
+          <div class="flex gap-2.5">
+            <button type="button" id="confirmReadySlotBtn"
+              class="flex-1 py-3 rounded-xl glow-btn text-gray-950 font-bold text-xs">
+              Confirm &amp; Park
+            </button>
+            <button type="button" id="declineReadySlotBtn"
+              class="px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/40 text-red-400 font-semibold text-xs hover:bg-red-500/20">
+              Decline
+            </button>
+          </div>
+        </div>`;
+
+      startWaitlistOfferTimer(entry.expiresAt);
+
+      let chosenHours = 1;
+      const readyPills = waitlistSessionContainer.querySelectorAll(".ready-dur-pill");
+      readyPills.forEach((p) => {
+        p.addEventListener("click", () => {
+          chosenHours = Number(p.dataset.whours);
+          readyPills.forEach((btn) => {
+            btn.className =
+              btn === p
+                ? "ready-dur-pill py-2 rounded-xl text-xs font-semibold bg-emerald-500 text-gray-950"
+                : "ready-dur-pill py-2 rounded-xl text-xs font-semibold bg-gray-900 border border-gray-800 text-gray-300";
+          });
+        });
+      });
+
+      document.getElementById("confirmReadySlotBtn").addEventListener("click", async (e) => {
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        btn.textContent = "Confirming...";
+        try {
+          const confirmRes = await fetch(`/api/booking/confirm/${slotId}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ estimatedDuration: chosenHours }),
+          });
+          const data = await confirmRes.json();
+          if (!confirmRes.ok) {
+            showActivityMessage(data.error || "Could not confirm slot.", true);
+            await loadDriverWaitlist();
+            return;
+          }
+          showActivityMessage("Waitlist slot confirmed! You are now parked.", false);
+          await Promise.all([loadDriverWaitlist(), loadDriverActivity(), loadBuildings()]);
+        } catch (err) {
+          showActivityMessage("Network error while confirming.", true);
+          btn.disabled = false;
+          btn.textContent = "Confirm & Park";
+        }
+      });
+
+      document.getElementById("declineReadySlotBtn").addEventListener("click", (e) => {
+        handleLeaveWaitlist(e.currentTarget);
+      });
+    }
+  } catch (err) {
+    console.error("Failed to load driver waitlist:", err);
+  }
+}
 
 // ==========================================
 // 7. Activity Tab (Live Timer, Checkout & History)
@@ -484,8 +804,7 @@ async function handleCheckout(slotId, btn) {
     }
 
     showActivityMessage(`Checked out! Final bill: ₹${data.totalAmount}`, false);
-    await loadDriverActivity();
-    await loadBuildings();
+    await Promise.all([loadDriverActivity(), loadBuildings()]);
   } catch (err) {
     showActivityMessage("Network error during checkout.", true);
     btn.disabled = false;
@@ -502,7 +821,6 @@ async function loadDriverActivity() {
     const activeBooking = history.find((b) => b.status === "ACTIVE");
     const completedBookings = history.filter((b) => b.status === "COMPLETED");
 
-    // 1. Render Currently Parked card
     if (!activeBooking) {
       if (countdownInterval) clearInterval(countdownInterval);
       activeSessionContainer.innerHTML = `
@@ -530,7 +848,7 @@ async function loadDriverActivity() {
 
           <div class="space-y-1.5 text-xs">
             <p class="text-gray-400">Vehicle: <span class="text-white font-bold">${activeBooking.vehicleNumber}</span></p>
-            <p class="text-gray-400">Service: <span class="text-white font-semibold">${serviceLabel}</span> <span class="text-gray-500">(${activeBooking.slotNumber})</span></p>
+            <p class="text-gray-400">Service: <span class="text-white font-semibold">${serviceLabel}</span></p>
           </div>
 
           <div class="flex items-baseline gap-2">
@@ -553,35 +871,26 @@ async function loadDriverActivity() {
       });
     }
 
-    // 2. Render Past Booking History
     driverHistoryCount.textContent = `${completedBookings.length} completed`;
 
     if (completedBookings.length === 0) {
-      driverHistoryList.innerHTML = `
-        <div class="glass-card rounded-2xl p-4 text-center text-xs text-gray-500">
-          No completed bookings yet.
-        </div>`;
+      driverHistoryList.innerHTML = `<div class="glass-card rounded-2xl p-4 text-center text-xs text-gray-500">No completed bookings yet.</div>`;
     } else {
       driverHistoryList.innerHTML = completedBookings
         .map((b) => {
           const isEv = b.slotNumber && b.slotNumber.startsWith("EV");
-          const icon = isEv ? "⚡" : "🚗";
-          const label = isEv ? "EV Charging" : "Parking";
-
           return `
             <div class="glass-card rounded-2xl px-4 py-3.5 flex items-center justify-between gap-3">
               <div class="flex items-center gap-3 min-w-0">
-                <span class="text-lg">${icon}</span>
+                <span class="text-lg">${isEv ? "⚡" : "🚗"}</span>
                 <div class="min-w-0">
                   <p class="text-sm font-bold text-white truncate">${b.buildingName}</p>
-                  <p class="text-xs text-gray-400 mt-0.5">${label} • ${formatDurationLabel(b.estimatedDuration)}</p>
+                  <p class="text-xs text-gray-400 mt-0.5">${isEv ? "EV Charging" : "Parking"} • ${formatDurationLabel(b.estimatedDuration)}</p>
                 </div>
               </div>
               <div class="text-right shrink-0 space-y-1">
                 <p class="text-sm font-bold text-white">₹${b.totalAmount || 0}</p>
-                <span class="text-[10px] font-semibold px-2.5 py-0.5 rounded-full bg-gray-800 text-gray-400 border border-gray-700">
-                  Completed
-                </span>
+                <span class="text-[10px] font-semibold px-2.5 py-0.5 rounded-full bg-gray-800 text-gray-400 border border-gray-700">Completed</span>
               </div>
             </div>`;
         })
@@ -606,6 +915,52 @@ document.getElementById("driverLogoutBtn").addEventListener("click", async () =>
     await fetch("/api/user/logout", { method: "POST" });
   } finally {
     window.location.href = "/index.html";
+  }
+});
+
+// ==========================================
+// 9. Init & Socket.io Real-Time Listeners
+// ==========================================
+async function initDriverApp() {
+  try {
+    const res = await fetch("/api/user/me");
+    if (!res.ok) {
+      window.location.href = "/index.html";
+      return;
+    }
+
+    const { user } = await res.json();
+    if (user.role !== "DRIVER") {
+      window.location.href = "/owner.html";
+      return;
+    }
+
+    currentDriver = user;
+    populateDriverAccount(user);
+
+    // Register with Socket.io for personal real-time notifications
+    socket.emit("register", user._id || user.id);
+
+    await Promise.all([loadBuildings(), loadDriverActivity(), loadDriverWaitlist(), loadNotifications()]);
+  } catch (err) {
+    console.error("Failed to initialize driver app:", err);
+  }
+}
+
+socket.on("slotsUpdated", loadBuildings);
+socket.on("bookingsUpdated", () => {
+  loadBuildings();
+  loadDriverActivity();
+});
+socket.on("waitlistUpdated", () => {
+  loadBuildings();
+  loadDriverWaitlist();
+});
+socket.on("notification:new", (notif) => {
+  showToast(notif.title, notif.message);
+  loadNotifications();
+  if (notif.type === "WAITLIST") {
+    loadDriverWaitlist();
   }
 });
 

@@ -1,17 +1,25 @@
 const Slot = require("../models/slot");
 const Booking = require("../models/booking");
 const User = require("../models/user");
-const { 
-    acquireSlotLock,
-    getSlotLockOwner,
-    releaseSlotLock,
- } = require("../redis");
+const Waitlist = require("../models/waitlist");
+const {
+  acquireSlotLock,
+  getSlotLockOwner,
+  releaseSlotLock,
+} = require("../redis");
+const { createNotification } = require("./notification");
+const {
+  promoteNextWaitlistDriver,
+  notifyNearbyWaitlistedDrivers,
+} = require("./waitlist");
+const { getIO } = require("../socket");
 
 async function handleLockSlot(req, res) {
   try {
     const { slotId } = req.params;
     const driverId = req.user.id;
-    // 0. Prevent a driver from booking a second slot while already parked
+
+    // 0. Prevent double active bookings
     const existingActive = await Booking.findOne({ driverId, status: "ACTIVE" });
     if (existingActive) {
       return res.status(409).json({
@@ -19,26 +27,25 @@ async function handleLockSlot(req, res) {
       });
     }
 
-    // 1. Check if the slot exists in MongoDB
     const slot = await Slot.findById(slotId);
     if (!slot) {
       return res.status(404).json({ error: "Parking slot not found" });
     }
 
-    // 2. Check if the slot is already booked or locked
     if (slot.status !== "AVAILABLE") {
       return res.status(409).json({ error: `Slot is currently ${slot.status}` });
     }
 
-    // 3. Try to grab the 5-minute (300 seconds) atomic lock
     const isLocked = await acquireSlotLock(slotId, driverId, 300);
     if (!isLocked) {
       return res.status(409).json({ error: "Another driver just locked this slot" });
     }
 
-    // 4. Update MongoDB status so the UI shows it as yellow/locked
     slot.status = "LOCKED";
     await slot.save();
+
+    const io = getIO();
+    if (io) io.emit("slotsUpdated");
 
     return res.status(200).json({
       message: "Slot locked for 5 minutes",
@@ -56,30 +63,31 @@ async function handleConfirmBooking(req, res) {
     const { estimatedDuration } = req.body;
     const driverId = req.user.id;
 
-    // Basic validation
     if (!estimatedDuration || estimatedDuration <= 0) {
       return res.status(400).json({ error: "Please select an estimated stay duration." });
     }
 
-    // 1. Check if the 5-minute lock still exists in Redis/Map
-    const lockOwnerId = await getSlotLockOwner(slotId);
-
-    if (!lockOwnerId) {
-      // If the 5-minute timer expired, reset the slot back to AVAILABLE in MongoDB
-      await Slot.findByIdAndUpdate(slotId, { status: "AVAILABLE" });
-      return res.status(400).json({
-        error: "Your 5-minute reservation lock expired. Please lock the slot again.",
+    const existingActive = await Booking.findOne({ driverId, status: "ACTIVE" });
+    if (existingActive) {
+      return res.status(409).json({
+        error: `You already have an active session at ${existingActive.buildingName}. Checkout first.`,
       });
     }
 
-    // 2. Make sure the driver confirming is the exact same driver who locked it
+    const lockOwnerId = await getSlotLockOwner(slotId);
+    if (!lockOwnerId) {
+      await Slot.findByIdAndUpdate(slotId, { status: "AVAILABLE" });
+      return res.status(400).json({
+        error: "Your 5-minute reservation lock expired. Please try again.",
+      });
+    }
+
     if (lockOwnerId !== driverId) {
       return res.status(403).json({
         error: "This slot is currently locked by another driver.",
       });
     }
 
-    // 3. Fetch the Slot and Driver details from MongoDB
     const slot = await Slot.findById(slotId);
     const driver = await User.findById(driverId);
 
@@ -87,7 +95,6 @@ async function handleConfirmBooking(req, res) {
       return res.status(404).json({ error: "Slot or Driver not found" });
     }
 
-    // 4. Create the permanent receipt in the Booking collection
     const newBooking = await Booking.create({
       slotId: slot._id,
       driverId: driver._id,
@@ -98,16 +105,42 @@ async function handleConfirmBooking(req, res) {
       slotNumber: slot.slotNumber,
       vehicleNumber: driver.vehicleNumber,
       hourlyRate: slot.hourlyRate,
-      estimatedDuration: estimatedDuration,
+      estimatedDuration,
     });
 
-    // 5. Mark the physical slot as BOOKED and link it to this driver
     slot.status = "BOOKED";
     slot.bookedBy = driver._id;
     await slot.save();
 
-    // 6. Delete the temporary 5-minute lock from RAM since it's now permanently booked
     await releaseSlotLock(slotId);
+
+    // If this driver was promoted from the waitlist, mark that entry completed
+    await Waitlist.updateMany(
+      { driverId, status: { $in: ["WAITING", "READY"] } },
+      { $set: { status: "COMPLETED" } }
+    );
+
+    // Send live notifications to both Owner and Driver
+    await createNotification({
+      userId: slot.ownerId,
+      title: "New Vehicle Parked",
+      message: `${driver.vehicleNumber} booked a ${slot.slotType === "EV" ? "EV Charging" : "Parking"} slot.`,
+      type: "BOOKING",
+    });
+
+    await createNotification({
+      userId: driver._id,
+      title: "Booking Confirmed",
+      message: `Your ${slot.slotType === "EV" ? "EV Charging" : "Parking"} slot at ${slot.buildingName} is now active.`,
+      type: "BOOKING",
+    });
+
+    const io = getIO();
+    if (io) {
+      io.emit("slotsUpdated");
+      io.emit("bookingsUpdated");
+      io.emit("waitlistUpdated");
+    }
 
     return res.status(201).json({
       message: "Booking confirmed successfully",
@@ -123,7 +156,6 @@ async function handleReleaseSlot(req, res) {
     const { slotId } = req.params;
     const driverId = req.user.id;
 
-    // 1. Find the currently ACTIVE booking for this slot
     const activeBooking = await Booking.findOne({
       slotId,
       driverId,
@@ -136,23 +168,51 @@ async function handleReleaseSlot(req, res) {
       });
     }
 
-    // 2. Calculate duration in hours (minimum 1 hour, rounded up)
     const endTime = new Date();
     const durationMs = endTime - new Date(activeBooking.startTime);
     const hoursParked = Math.max(1, Math.ceil(durationMs / (1000 * 60 * 60)));
     const totalAmount = hoursParked * activeBooking.hourlyRate;
 
-    // 3. Complete the booking receipt
     activeBooking.endTime = endTime;
     activeBooking.totalAmount = totalAmount;
     activeBooking.status = "COMPLETED";
     await activeBooking.save();
 
-    // 4. Free up the physical slot in MongoDB for the next driver
-    await Slot.findByIdAndUpdate(slotId, {
-      status: "AVAILABLE",
-      bookedBy: null,
+    const slot = await Slot.findByIdAndUpdate(
+      slotId,
+      { status: "AVAILABLE", bookedBy: null },
+      { new: true }
+    );
+
+    // Send checkout notifications to both Owner and Driver
+    await createNotification({
+      userId: activeBooking.ownerId,
+      title: "Vehicle Checked Out",
+      message: `${activeBooking.vehicleNumber} checked out from their slot. Earned ₹${totalAmount}.`,
+      type: "CHECKOUT",
     });
+
+    await createNotification({
+      userId: driverId,
+      title: "Checkout Complete",
+      message: `Session ended at ${activeBooking.buildingName}. Final bill: ₹${totalAmount}.`,
+      type: "CHECKOUT",
+    });
+
+    // Promote next waiter in THIS building; if none, notify waiters in the same city + locality
+    if (slot) {
+      const promoted = await promoteNextWaitlistDriver(activeBooking.ownerId, slot.slotType, slot._id);
+      if (!promoted) {
+        await notifyNearbyWaitlistedDrivers(slot);
+      }
+    }
+
+    const io = getIO();
+    if (io) {
+      io.emit("slotsUpdated");
+      io.emit("bookingsUpdated");
+      io.emit("waitlistUpdated");
+    }
 
     return res.status(200).json({
       message: "Checked out successfully. Slot is now AVAILABLE.",

@@ -1,4 +1,6 @@
-// Navigation & Section Elements
+// ==========================================
+// 1. Navigation Tabs
+// ==========================================
 const tabs = {
   dashboard: {
     btn: document.getElementById("navDashboard"),
@@ -28,13 +30,12 @@ function switchTab(activeKey) {
   });
 }
 
-// Attach click listeners to bottom nav buttons
 tabs.dashboard.btn.addEventListener("click", () => switchTab("dashboard"));
 tabs.earnings.btn.addEventListener("click", () => switchTab("earnings"));
 tabs.account.btn.addEventListener("click", () => switchTab("account"));
 
 // ==========================================
-// Dashboard Controls: Steppers & Rate Edit
+// 2. Dashboard Controls: Steppers & Rate Edit
 // ==========================================
 let parkingSlots = 0;
 let evSlots = 0;
@@ -47,18 +48,13 @@ const evSlotsBig = document.getElementById("evSlotsBig");
 const evSlotsCount = document.getElementById("evSlotsCount");
 
 function renderSlotCounts() {
-  const openParking = Math.max(0, parkingSlots - parkingBooked);
-  const openEv = Math.max(0, evSlots - evBooked);
-
-  // Big number = live Available slots; Stepper number = Total slots configured
-  parkingSlotsBig.textContent = openParking;
+  parkingSlotsBig.textContent = Math.max(0, parkingSlots - parkingBooked);
   parkingSlotsCount.textContent = parkingSlots;
 
-  evSlotsBig.textContent = openEv;
+  evSlotsBig.textContent = Math.max(0, evSlots - evBooked);
   evSlotsCount.textContent = evSlots;
 }
 
-// Parking - / + steppers
 document.getElementById("decParkingBtn").addEventListener("click", () => {
   if (parkingSlots > 0) {
     parkingSlots--;
@@ -70,7 +66,6 @@ document.getElementById("incParkingBtn").addEventListener("click", () => {
   renderSlotCounts();
 });
 
-// EV - / + steppers
 document.getElementById("decEvBtn").addEventListener("click", () => {
   if (evSlots > 0) {
     evSlots--;
@@ -82,7 +77,6 @@ document.getElementById("incEvBtn").addEventListener("click", () => {
   renderSlotCounts();
 });
 
-// Reusable helper for the pencil edit buttons
 function setupRateEditor(inputId, btnId) {
   const input = document.getElementById(inputId);
   const btn = document.getElementById(btnId);
@@ -106,7 +100,6 @@ function setupRateEditor(inputId, btnId) {
     }
   });
 
-  // Lock cleanly when user presses Enter or clicks away
   input.addEventListener("blur", lockInput);
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") {
@@ -120,9 +113,90 @@ setupRateEditor("parkingRateInput", "editParkingRateBtn");
 setupRateEditor("evRateInput", "editEvRateBtn");
 
 // ==========================================
-// Auth Guard, Header Info & Live Slot Sync
+// 3. Toast & Notifications Dropdown
+// ==========================================
+const notifBtn = document.getElementById("notifBtn");
+const notifDot = document.getElementById("notifDot");
+const notifDropdown = document.getElementById("notifDropdown");
+const notifList = document.getElementById("notifList");
+const liveToast = document.getElementById("liveToast");
+const toastTitle = document.getElementById("toastTitle");
+const toastMsg = document.getElementById("toastMsg");
+let toastTimer = null;
+
+function showToast(title, message) {
+  toastTitle.textContent = title;
+  toastMsg.textContent = message;
+  liveToast.classList.remove("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => liveToast.classList.add("hidden"), 4000);
+}
+
+function formatTimeAgo(dateStr) {
+  const diffSecs = Math.max(0, Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000));
+  if (diffSecs < 60) return "Just now";
+  const mins = Math.floor(diffSecs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
+async function loadNotifications() {
+  try {
+    const res = await fetch("/api/notification");
+    if (!res.ok) return;
+
+    const { unreadCount, notifications } = await res.json();
+    if (unreadCount > 0) notifDot.classList.remove("hidden");
+    else notifDot.classList.add("hidden");
+
+    if (!notifications || notifications.length === 0) {
+      notifList.innerHTML = `<p class="p-4 text-center text-xs text-gray-500">No notifications yet.</p>`;
+      return;
+    }
+
+    notifList.innerHTML = notifications
+      .map((n) => `
+        <div class="px-4 py-3 ${n.isRead ? "opacity-75" : "bg-emerald-500/5"}">
+          <div class="flex items-center justify-between gap-2">
+            <p class="text-xs font-bold text-white">${n.title}</p>
+            <span class="text-[10px] text-gray-500 shrink-0">${formatTimeAgo(n.createdAt)}</span>
+          </div>
+          <p class="text-[11px] text-gray-300 mt-0.5 leading-relaxed">${n.message}</p>
+        </div>
+      `)
+      .join("");
+  } catch (err) {
+    console.error("Failed to load notifications:", err);
+  }
+}
+
+notifBtn.addEventListener("click", async (e) => {
+  e.stopPropagation();
+  const willOpen = notifDropdown.classList.contains("hidden");
+  notifDropdown.classList.toggle("hidden");
+
+  if (willOpen) {
+    await loadNotifications();
+    if (!notifDot.classList.contains("hidden")) {
+      notifDot.classList.add("hidden");
+      fetch("/api/notification/read-all", { method: "PATCH" }).catch(() => {});
+    }
+  }
+});
+
+document.addEventListener("click", (e) => {
+  if (!notifDropdown.classList.contains("hidden") && !notifDropdown.contains(e.target) && e.target !== notifBtn) {
+    notifDropdown.classList.add("hidden");
+  }
+});
+
+// ==========================================
+// 4. Auth Guard, Header Info & Live Slot Sync
 // ==========================================
 let currentOwner = null;
+const socket = io();
 
 const headerBuildingName = document.getElementById("headerBuildingName");
 const headerLocation = document.getElementById("headerLocation");
@@ -143,52 +217,6 @@ function showSyncStatus(text, isError = false) {
     : "text-xs text-center rounded-xl px-4 py-2.5 text-emerald-400 bg-emerald-500/10 border border-emerald-500/30";
 }
 
-async function initOwnerDashboard() {
-  try {
-    // 1. Verify session & load owner profile
-    const res = await fetch("/api/user/me");
-    if (!res.ok) {
-      window.location.href = "/index.html";
-      return;
-    }
-
-    const { user } = await res.json();
-    if (user.role !== "OWNER") {
-      window.location.href = "/driver.html";
-      return;
-    }
-
-    currentOwner = user;
-    populateAccountTab(user);
-
-    // 2. Populate header
-    headerBuildingName.textContent = user.buildingName || "My Building";
-    headerLocation.innerHTML = `<span>📍</span> <span>${user.locality || ""}, ${user.city || ""}</span>`;
-    headerServiceBadge.textContent = user.buildingType === "BOTH" ? "PARKING & EV" : user.buildingType;
-
-    // 3. Show only the cards matching owner's buildingType
-    if (user.buildingType === "PARKING") {
-      cardEv.classList.add("hidden");
-      serviceCardsGrid.classList.replace("grid-cols-2", "grid-cols-1");
-    } else if (user.buildingType === "EV") {
-      cardParking.classList.add("hidden");
-      serviceCardsGrid.classList.replace("grid-cols-2", "grid-cols-1");
-    }
-
-    // 4. Load existing slots & bookings from MongoDB
-    await loadOwnerSlots();
-    await loadOwnerBookings();
-
-    // 5. Quietly refresh live slots & bookings every 15 seconds
-    setInterval(() => {
-      loadOwnerSlots();
-      loadOwnerBookings();
-    }, 15000);
-  } catch (err) {
-    showSyncStatus("Unable to connect to server.", true);
-  }
-}
-
 async function loadOwnerSlots() {
   const res = await fetch("/api/slot/my-slots");
   if (!res.ok) return;
@@ -203,17 +231,12 @@ async function loadOwnerSlots() {
   evSlots = evList.length;
   evBooked = evList.filter((s) => s.status !== "AVAILABLE").length;
 
-  if (standardList.length > 0) {
-    parkingRateInput.value = standardList[0].hourlyRate;
-  }
-  if (evList.length > 0) {
-    evRateInput.value = evList[0].hourlyRate;
-  }
+  if (standardList.length > 0) parkingRateInput.value = standardList[0].hourlyRate;
+  if (evList.length > 0) evRateInput.value = evList[0].hourlyRate;
 
   renderSlotCounts();
 }
 
-// Save & Sync Live handler
 syncLiveBtn.addEventListener("click", async () => {
   if (!currentOwner) return;
 
@@ -271,22 +294,17 @@ syncLiveBtn.addEventListener("click", async () => {
 });
 
 // ==========================================
-// Live Parked Vehicles, Earnings & History
+// 5. Live Parked Vehicles, Waitlist & Earnings
 // ==========================================
-let lastActiveCount = 0;
-
 function formatTimeRemaining(startTime, durationHours) {
   const endMs = new Date(startTime).getTime() + durationHours * 60 * 60 * 1000;
   const diffMs = endMs - Date.now();
-
   if (diffMs <= 0) return "Overtime";
 
   const totalMins = Math.ceil(diffMs / 60000);
   const hrs = Math.floor(totalMins / 60);
   const mins = totalMins % 60;
-
-  if (hrs > 0) return `${hrs}h ${mins}m left`;
-  return `${mins}m left`;
+  return hrs > 0 ? `${hrs}h ${mins}m left` : `${mins}m left`;
 }
 
 function formatDurationLabel(hours) {
@@ -298,11 +316,7 @@ function isSameDay(dateValue) {
   if (!dateValue) return false;
   const d = new Date(dateValue);
   const now = new Date();
-  return (
-    d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate()
-  );
+  return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
 }
 
 async function loadOwnerBookings() {
@@ -314,51 +328,35 @@ async function loadOwnerBookings() {
     const activeBookings = history.filter((b) => b.status === "ACTIVE");
     const completedBookings = history.filter((b) => b.status === "COMPLETED");
 
-    // Show notification dot if a new driver just parked
-    const notifDot = document.getElementById("notifDot");
-    if (activeBookings.length > lastActiveCount && lastActiveCount !== 0) {
-      notifDot.classList.remove("hidden");
-    }
-    lastActiveCount = activeBookings.length;
-
-    // 1. Render Live Parked Vehicles (Dashboard Tab)
+    // 1. Live Parked Vehicles
     document.getElementById("activeVehiclesCount").textContent = `${activeBookings.length} active`;
     const liveList = document.getElementById("liveVehiclesList");
 
     if (activeBookings.length === 0) {
-      liveList.innerHTML = `
-        <div class="glass-card rounded-2xl p-4 text-center text-xs text-gray-500">
-          No vehicles currently parked.
-        </div>`;
+      liveList.innerHTML = `<div class="glass-card rounded-2xl p-4 text-center text-xs text-gray-500">No vehicles currently parked.</div>`;
     } else {
       liveList.innerHTML = activeBookings
         .map((b) => {
           const isEv = b.slotNumber && b.slotNumber.startsWith("EV");
-          const icon = isEv ? "⚡" : "🚗";
-          const label = isEv ? "EV Charging" : "Parking";
           const timeLeft = formatTimeRemaining(b.startTime || b.createdAt, b.estimatedDuration);
-
           return `
             <div class="glass-card rounded-2xl px-4 py-3.5 flex items-center justify-between gap-3">
               <div class="flex items-center gap-3 min-w-0">
-                <span class="text-lg">${icon}</span>
+                <span class="text-lg">${isEv ? "⚡" : "🚗"}</span>
                 <div class="min-w-0">
                   <p class="text-sm font-bold text-white truncate">${b.vehicleNumber || "Unknown Plate"}</p>
                   <div class="flex items-center gap-2 mt-0.5">
-                    <span class="text-[10px] px-2 py-0.5 rounded-md bg-gray-800 text-gray-300 border border-gray-700">${label}</span>
-                    <span class="text-[11px] text-gray-500">${b.slotNumber}</span>
+                    <span class="text-[10px] px-2 py-0.5 rounded-md bg-gray-800 text-gray-300 border border-gray-700">${isEv ? "EV Charging" : "Parking"}</span>
                   </div>
                 </div>
               </div>
-              <span class="text-xs font-semibold ${timeLeft === "Overtime" ? "text-amber-400" : "text-gray-300"} shrink-0">
-                ${timeLeft}
-              </span>
+              <span class="text-xs font-semibold ${timeLeft === "Overtime" ? "text-amber-400" : "text-gray-300"} shrink-0">${timeLeft}</span>
             </div>`;
         })
         .join("");
     }
 
-    // 2. Calculate & Render Revenue Stats (Earnings Tab)
+    // 2. Revenue Stats
     const totalRevenue = completedBookings.reduce((sum, b) => sum + (b.totalAmount || 0), 0);
     const completedToday = completedBookings.filter((b) => isSameDay(b.endTime || b.createdAt));
     const todayRevenue = completedToday.reduce((sum, b) => sum + (b.totalAmount || 0), 0);
@@ -369,41 +367,32 @@ async function loadOwnerBookings() {
     document.getElementById("completedTodayStat").textContent = completedToday.length;
     document.getElementById("totalBookingsCount").textContent = `${history.length} total`;
 
-    // 3. Render Booking History Feed (Earnings Tab)
+    // 3. Booking History Feed
     const historyList = document.getElementById("bookingHistoryList");
-
     if (history.length === 0) {
-      historyList.innerHTML = `
-        <div class="glass-card rounded-2xl p-4 text-center text-xs text-gray-500">
-          No booking history yet.
-        </div>`;
+      historyList.innerHTML = `<div class="glass-card rounded-2xl p-4 text-center text-xs text-gray-500">No booking history yet.</div>`;
     } else {
       historyList.innerHTML = history
         .map((b) => {
           const isEv = b.slotNumber && b.slotNumber.startsWith("EV");
-          const icon = isEv ? "⚡" : "🚗";
-          const label = isEv ? "EV Charging" : "Parking";
           const isActive = b.status === "ACTIVE";
-          const amount = isActive
-            ? Math.round((b.hourlyRate || 0) * (b.estimatedDuration || 1))
-            : b.totalAmount || 0;
-
-          const statusBadge = isActive
+          const amount = isActive ? Math.round((b.hourlyRate || 0) * (b.estimatedDuration || 1)) : b.totalAmount || 0;
+          const badge = isActive
             ? `<span class="text-[10px] font-semibold px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/40">Active</span>`
             : `<span class="text-[10px] font-semibold px-2.5 py-0.5 rounded-full bg-gray-800 text-gray-400 border border-gray-700">Completed</span>`;
 
           return `
             <div class="glass-card rounded-2xl px-4 py-3.5 flex items-center justify-between gap-3">
               <div class="flex items-center gap-3 min-w-0">
-                <span class="text-lg">${icon}</span>
+                <span class="text-lg">${isEv ? "⚡" : "🚗"}</span>
                 <div class="min-w-0">
                   <p class="text-sm font-bold text-white truncate">${b.vehicleNumber || "Unknown Plate"}</p>
-                  <p class="text-xs text-gray-400 mt-0.5">${label} • ${formatDurationLabel(b.estimatedDuration)}</p>
+                  <p class="text-xs text-gray-400 mt-0.5">${isEv ? "EV Charging" : "Parking"} • ${formatDurationLabel(b.estimatedDuration)}</p>
                 </div>
               </div>
               <div class="text-right shrink-0 space-y-1">
                 <p class="text-sm font-bold text-white">₹${amount}</p>
-                ${statusBadge}
+                ${badge}
               </div>
             </div>`;
         })
@@ -414,15 +403,48 @@ async function loadOwnerBookings() {
   }
 }
 
-// Clear notification dot when bell is clicked
-document.getElementById("notifBtn").addEventListener("click", () => {
-  document.getElementById("notifDot").classList.add("hidden");
-  loadOwnerSlots();
-  loadOwnerBookings();
-});
+async function loadOwnerWaitlist() {
+  try {
+    const res = await fetch("/api/waitlist/owner-queue");
+    if (!res.ok) return;
+
+    const { count, queue } = await res.json();
+    document.getElementById("ownerWaitlistCount").textContent = `${count} waiting`;
+    const listEl = document.getElementById("ownerWaitlistList");
+
+    if (!queue || queue.length === 0) {
+      listEl.innerHTML = `<div class="glass-card rounded-2xl p-4 text-center text-xs text-gray-500">No drivers on the waitlist.</div>`;
+      return;
+    }
+
+    listEl.innerHTML = queue
+      .map((w, idx) => {
+        const isEv = w.slotType === "EV";
+        const isReady = w.status === "READY";
+        const badge = isReady
+          ? `<span class="text-[10px] font-semibold px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/40">Slot Ready</span>`
+          : `<span class="text-[10px] font-semibold px-2.5 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/40">#${idx + 1} Waiting</span>`;
+
+        return `
+          <div class="glass-card rounded-2xl px-4 py-3.5 flex items-center justify-between gap-3">
+            <div class="flex items-center gap-3 min-w-0">
+              <span class="text-lg">${isEv ? "⚡" : "🚗"}</span>
+              <div class="min-w-0">
+                <p class="text-sm font-bold text-white truncate">${w.vehicleNumber}</p>
+                <p class="text-[11px] text-gray-400 mt-0.5">${isEv ? "EV Charging" : "Parking"} Waitlist</p>
+              </div>
+            </div>
+            ${badge}
+          </div>`;
+      })
+      .join("");
+  } catch (err) {
+    console.error("Failed to load owner waitlist:", err);
+  }
+}
 
 // ==========================================
-// Account Tab & Logout
+// 6. Account Tab & Logout
 // ==========================================
 function populateAccountTab(user) {
   document.getElementById("accName").textContent = user.name || "--";
@@ -447,5 +469,59 @@ document.getElementById("logoutBtn").addEventListener("click", async () => {
   }
 });
 
-// Run on page load
+// ==========================================
+// 7. Init & Socket.io Real-Time Listeners
+// ==========================================
+async function initOwnerDashboard() {
+  try {
+    const res = await fetch("/api/user/me");
+    if (!res.ok) {
+      window.location.href = "/index.html";
+      return;
+    }
+
+    const { user } = await res.json();
+    if (user.role !== "OWNER") {
+      window.location.href = "/driver.html";
+      return;
+    }
+
+    currentOwner = user;
+    populateAccountTab(user);
+
+    // Register with Socket.io for personal real-time notifications
+    socket.emit("register", user._id || user.id);
+
+    headerBuildingName.textContent = user.buildingName || "My Building";
+    headerLocation.innerHTML = `<span>📍</span> <span>${user.locality || ""}, ${user.city || ""}</span>`;
+    headerServiceBadge.textContent = user.buildingType === "BOTH" ? "PARKING & EV" : user.buildingType;
+
+    if (user.buildingType === "PARKING") {
+      cardEv.classList.add("hidden");
+      serviceCardsGrid.classList.replace("grid-cols-2", "grid-cols-1");
+    } else if (user.buildingType === "EV") {
+      cardParking.classList.add("hidden");
+      serviceCardsGrid.classList.replace("grid-cols-2", "grid-cols-1");
+    }
+
+    await Promise.all([loadOwnerSlots(), loadOwnerBookings(), loadOwnerWaitlist(), loadNotifications()]);
+
+    // Refresh countdown text once per minute
+    setInterval(loadOwnerBookings, 60000);
+  } catch (err) {
+    showSyncStatus("Unable to connect to server.", true);
+  }
+}
+
+socket.on("slotsUpdated", loadOwnerSlots);
+socket.on("bookingsUpdated", () => {
+  loadOwnerSlots();
+  loadOwnerBookings();
+});
+socket.on("waitlistUpdated", loadOwnerWaitlist);
+socket.on("notification:new", (notif) => {
+  showToast(notif.title, notif.message);
+  loadNotifications();
+});
+
 initOwnerDashboard();

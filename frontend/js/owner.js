@@ -38,6 +38,8 @@ tabs.account.btn.addEventListener("click", () => switchTab("account"));
 // ==========================================
 let parkingSlots = 0;
 let evSlots = 0;
+let parkingBooked = 0;
+let evBooked = 0;
 
 const parkingSlotsBig = document.getElementById("parkingSlotsBig");
 const parkingSlotsCount = document.getElementById("parkingSlotsCount");
@@ -45,9 +47,14 @@ const evSlotsBig = document.getElementById("evSlotsBig");
 const evSlotsCount = document.getElementById("evSlotsCount");
 
 function renderSlotCounts() {
-  parkingSlotsBig.textContent = parkingSlots;
+  const openParking = Math.max(0, parkingSlots - parkingBooked);
+  const openEv = Math.max(0, evSlots - evBooked);
+
+  // Big number = live Available slots; Stepper number = Total slots configured
+  parkingSlotsBig.textContent = openParking;
   parkingSlotsCount.textContent = parkingSlots;
-  evSlotsBig.textContent = evSlots;
+
+  evSlotsBig.textContent = openEv;
   evSlotsCount.textContent = evSlots;
 }
 
@@ -172,8 +179,11 @@ async function initOwnerDashboard() {
     await loadOwnerSlots();
     await loadOwnerBookings();
 
-    // 5. Quietly refresh live bookings every 15 seconds
-    setInterval(loadOwnerBookings, 15000);
+    // 5. Quietly refresh live slots & bookings every 15 seconds
+    setInterval(() => {
+      loadOwnerSlots();
+      loadOwnerBookings();
+    }, 15000);
   } catch (err) {
     showSyncStatus("Unable to connect to server.", true);
   }
@@ -188,7 +198,10 @@ async function loadOwnerSlots() {
   const evList = slots.filter((s) => s.slotType === "EV");
 
   parkingSlots = standardList.length;
+  parkingBooked = standardList.filter((s) => s.status !== "AVAILABLE").length;
+
   evSlots = evList.length;
+  evBooked = evList.filter((s) => s.status !== "AVAILABLE").length;
 
   if (standardList.length > 0) {
     parkingRateInput.value = standardList[0].hourlyRate;
@@ -404,6 +417,7 @@ async function loadOwnerBookings() {
 // Clear notification dot when bell is clicked
 document.getElementById("notifBtn").addEventListener("click", () => {
   document.getElementById("notifDot").classList.add("hidden");
+  loadOwnerSlots();
   loadOwnerBookings();
 });
 

@@ -346,13 +346,14 @@ durationPills.forEach((pill) => {
 });
 
 // Confirm & Book Slot (Step 1: Lock in Redis → Step 2: Confirm in MongoDB)
+// Confirm & Book Slot (Auto-retries next available bay on 409 collision)
 confirmBookingBtn.addEventListener("click", async () => {
   if (!selectedBuilding) return;
 
   const targetList = selectedServiceType === "EV" ? selectedBuilding.evSlots : selectedBuilding.standardSlots;
-  const freeSlot = targetList.find((s) => s.status === "AVAILABLE");
+  const availableSlots = targetList.filter((s) => s.status === "AVAILABLE");
 
-  if (!freeSlot) {
+  if (availableSlots.length === 0) {
     bookingErrorMsg.textContent = "No available slots left for this service.";
     bookingErrorMsg.classList.remove("hidden");
     return;
@@ -363,17 +364,35 @@ confirmBookingBtn.addEventListener("click", async () => {
   bookingErrorMsg.classList.add("hidden");
 
   try {
-    // 1. Lock the slot
-    const lockRes = await fetch(`/api/booking/lock/${freeSlot._id}`, { method: "POST" });
-    const lockData = await lockRes.json();
-    if (!lockRes.ok) {
-      bookingErrorMsg.textContent = lockData.error || "Could not lock slot.";
+    let lockedSlot = null;
+    let lastError = "Could not lock slot.";
+
+    // 1. Try locking available slots one-by-one in case another driver grabbed the first one
+    for (const slot of availableSlots) {
+      const lockRes = await fetch(`/api/booking/lock/${slot._id}`, { method: "POST" });
+      const lockData = await lockRes.json();
+
+      if (lockRes.ok) {
+        lockedSlot = slot;
+        break;
+      }
+
+      lastError = lockData.error || lastError;
+      // Stop immediately if the driver already has an active session
+      if (lastError.includes("already have an active session")) {
+        break;
+      }
+    }
+
+    if (!lockedSlot) {
+      bookingErrorMsg.textContent = lastError;
       bookingErrorMsg.classList.remove("hidden");
+      await loadBuildings();
       return;
     }
 
-    // 2. Confirm the booking
-    const confirmRes = await fetch(`/api/booking/confirm/${freeSlot._id}`, {
+    // 2. Confirm the booking on the locked slot
+    const confirmRes = await fetch(`/api/booking/confirm/${lockedSlot._id}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ estimatedDuration: selectedDuration }),

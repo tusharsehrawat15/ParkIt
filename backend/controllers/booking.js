@@ -11,6 +11,13 @@ async function handleLockSlot(req, res) {
   try {
     const { slotId } = req.params;
     const driverId = req.user.id;
+    // 0. Prevent a driver from booking a second slot while already parked
+    const existingActive = await Booking.findOne({ driverId, status: "ACTIVE" });
+    if (existingActive) {
+      return res.status(409).json({
+        error: `You already have an active session at ${existingActive.buildingName}. Checkout first.`,
+      });
+    }
 
     // 1. Check if the slot exists in MongoDB
     const slot = await Slot.findById(slotId);

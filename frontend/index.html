@@ -8,6 +8,10 @@
     <link rel="icon" type="image/svg+xml" href="assets/logo.svg">
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="css/style.css">
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="theme-color" content="#10b981" />
+    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+    <script src="/js/pwa.js" defer></script>
 </head>
 
 <body class="min-h-screen flex flex-col items-center justify-center p-4">
@@ -57,21 +61,24 @@
 
             <!-- Full Name (Sign Up only — hidden on Login) -->
             <div id="nameField" class="hidden">
-                <label for="name" class="block text-xs uppercase tracking-wider text-gray-400 mb-1.5 font-medium">Full Name</label>
+                <label for="name" class="block text-xs uppercase tracking-wider text-gray-400 mb-1.5 font-medium">Full
+                    Name</label>
                 <input type="text" id="name" placeholder="Aarav Sharma"
                     class="w-full px-4 py-3 rounded-xl bg-gray-900/90 border border-gray-800 text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 transition-colors">
             </div>
 
             <!-- Email -->
             <div>
-                <label for="email" class="block text-xs uppercase tracking-wider text-gray-400 mb-1.5 font-medium">Email Address</label>
+                <label for="email" class="block text-xs uppercase tracking-wider text-gray-400 mb-1.5 font-medium">Email
+                    Address</label>
                 <input type="email" id="email" required placeholder="name@example.com"
                     class="w-full px-4 py-3 rounded-xl bg-gray-900/90 border border-gray-800 text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 transition-colors">
             </div>
 
             <!-- Password -->
             <div>
-                <label for="password" class="block text-xs uppercase tracking-wider text-gray-400 mb-1.5 font-medium">Password</label>
+                <label for="password"
+                    class="block text-xs uppercase tracking-wider text-gray-400 mb-1.5 font-medium">Password</label>
                 <input type="password" id="password" required placeholder="••••••••"
                     class="w-full px-4 py-3 rounded-xl bg-gray-900/90 border border-gray-800 text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 transition-colors">
             </div>
@@ -79,7 +86,9 @@
             <!-- Driver-Only Fields (hidden by default) -->
             <div id="driverFields" class="hidden space-y-4">
                 <div>
-                    <label for="vehicleNumber" class="block text-xs uppercase tracking-wider text-gray-400 mb-1.5 font-medium">Vehicle Number</label>
+                    <label for="vehicleNumber"
+                        class="block text-xs uppercase tracking-wider text-gray-400 mb-1.5 font-medium">Vehicle
+                        Number</label>
                     <input type="text" id="vehicleNumber" placeholder="HR-10-AM-1234"
                         class="w-full px-4 py-3 rounded-xl bg-gray-900/90 border border-gray-800 text-white placeholder-gray-600 uppercase focus:outline-none focus:border-emerald-500 transition-colors">
                 </div>
@@ -88,26 +97,32 @@
             <!-- Owner-Only Fields (hidden by default) -->
             <div id="ownerFields" class="hidden space-y-4">
                 <div>
-                    <label for="buildingName" class="block text-xs uppercase tracking-wider text-gray-400 mb-1.5 font-medium">Building / Complex Name</label>
+                    <label for="buildingName"
+                        class="block text-xs uppercase tracking-wider text-gray-400 mb-1.5 font-medium">Building /
+                        Complex Name</label>
                     <input type="text" id="buildingName" placeholder="CyberHub Tower B"
                         class="w-full px-4 py-3 rounded-xl bg-gray-900/90 border border-gray-800 text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 transition-colors">
                 </div>
 
                 <div class="grid grid-cols-2 gap-3">
                     <div>
-                        <label for="locality" class="block text-xs uppercase tracking-wider text-gray-400 mb-1.5 font-medium">Locality</label>
+                        <label for="locality"
+                            class="block text-xs uppercase tracking-wider text-gray-400 mb-1.5 font-medium">Locality</label>
                         <input type="text" id="locality" placeholder="DLF Phase 2"
                             class="w-full px-4 py-3 rounded-xl bg-gray-900/90 border border-gray-800 text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 transition-colors">
                     </div>
                     <div>
-                        <label for="city" class="block text-xs uppercase tracking-wider text-gray-400 mb-1.5 font-medium">City</label>
+                        <label for="city"
+                            class="block text-xs uppercase tracking-wider text-gray-400 mb-1.5 font-medium">City</label>
                         <input type="text" id="city" placeholder="Gurugram"
                             class="w-full px-4 py-3 rounded-xl bg-gray-900/90 border border-gray-800 text-white placeholder-gray-600 focus:outline-none focus:border-emerald-500 transition-colors">
                     </div>
                 </div>
 
                 <div>
-                    <label for="buildingType" class="block text-xs uppercase tracking-wider text-gray-400 mb-1.5 font-medium">Service Provided</label>
+                    <label for="buildingType"
+                        class="block text-xs uppercase tracking-wider text-gray-400 mb-1.5 font-medium">Service
+                        Provided</label>
                     <select id="buildingType"
                         class="w-full px-4 py-3 rounded-xl bg-gray-900/90 border border-gray-800 text-white focus:outline-none focus:border-emerald-500 transition-colors">
                         <option value="PARKING">Parking Only</option>
@@ -118,7 +133,9 @@
             </div>
 
             <!-- Error Message (hidden by default) -->
-            <p id="errorMsg" class="hidden text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-2.5 text-center"></p>
+            <p id="errorMsg"
+                class="hidden text-sm text-red-400 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-2.5 text-center">
+            </p>
 
             <!-- Submit Button -->
             <button type="submit" id="submitBtn"

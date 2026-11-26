@@ -30,6 +30,23 @@ const inactiveTabClass = "flex-1 py-2.5 text-sm font-semibold rounded-lg text-gr
 const activeRoleClass = "py-2.5 px-4 rounded-xl border border-emerald-500 bg-emerald-500/10 text-emerald-400 text-sm font-semibold transition-all";
 const inactiveRoleClass = "py-2.5 px-4 rounded-xl border border-gray-800 bg-gray-900/50 text-gray-400 text-sm font-semibold hover:text-white transition-all";
 
+// Auto-redirect if user already has a valid session cookie
+(async function checkExistingSession() {
+  try {
+    const res = await fetch("/api/user/me");
+    if (!res.ok) return;
+    const { user } = await res.json();
+    if (user?.role === "OWNER") {
+      window.location.replace("/owner.html");
+    } else if (user?.role === "DRIVER") {
+      window.location.replace("/driver.html");
+    }
+  } catch (_) {
+    // Stay on login page if offline or unauthorized
+  }
+})();
+
+
 function updateRoleFields() {
   // On Login, hide both role sections and remove required flags
   if (currentMode === "login") {
@@ -164,10 +181,10 @@ authForm.addEventListener("submit", async (e) => {
     }
 
     // Login worked → redirect based on role returned from MongoDB
-    if (data.user.role === "DRIVER") {
-      window.location.href = "/driver.html";
+    if (data.user.role === "OWNER") {
+      window.location.replace("/owner.html");
     } else {
-      window.location.href = "/owner.html";
+      window.location.replace("/driver.html");
     }
   } catch (err) {
     showMessage("Cannot connect to server. Is your backend running?", true);

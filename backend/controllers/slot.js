@@ -26,7 +26,7 @@ async function handleCreateSlot(req, res) {
       return res.status(409).json({ error: `Slot ${slotNumber} already exists in ${owner.buildingName}` });
     }
 
-    const newSlot = await Slot.create({
+    const slotPayload = {
       ownerId: owner._id,
       buildingName: owner.buildingName,
       locality: owner.locality,
@@ -35,7 +35,13 @@ async function handleCreateSlot(req, res) {
       slotNumber,
       slotType: slotType || "STANDARD",
       hourlyRate,
-    });
+    };
+
+    if (owner.location?.coordinates?.length === 2) {
+      slotPayload.location = owner.location;
+    }
+
+    const newSlot = await Slot.create(slotPayload);
 
     const promoted = await promoteNextWaitlistDriver(owner._id, newSlot.slotType, newSlot._id);
     if (!promoted) {
@@ -75,14 +81,37 @@ async function handleGetAllSlots(req, res) {
       ];
     }
 
-    const slots = await Slot.find(filter).sort({ buildingName: 1, slotNumber: 1 });
+    const lat = req.query.lat !== undefined ? parseFloat(req.query.lat) : NaN;
+    const lng = req.query.lng !== undefined ? parseFloat(req.query.lng) : NaN;
+    const hasCoords = !Number.isNaN(lat) && !Number.isNaN(lng);
+
+    let slots;
+    if (hasCoords) {
+      const maxDistance = req.query.maxDistance ? Number(req.query.maxDistance) : 50000; // default 50 km
+      slots = await Slot.aggregate([
+        {
+          $geoNear: {
+            near: { type: "Point", coordinates: [lng, lat] },
+            distanceField: "distanceMeters",
+            maxDistance,
+            spherical: true,
+            query: filter,
+          },
+        },
+      ]);
+    } else {
+      slots = await Slot.find(filter).sort({ buildingName: 1, slotNumber: 1 });
+    }
 
     const slotsWithOccupancy = await Promise.all(
       slots.map(async (slot) => {
-        const slotData = slot.toObject();
-        if (slot.status === "BOOKED") {
+        const slotData = slot.toObject ? slot.toObject() : { ...slot };
+        if (typeof slotData.distanceMeters === "number") {
+          slotData.distanceKm = Number((slotData.distanceMeters / 1000).toFixed(2));
+        }
+        if (slotData.status === "BOOKED") {
           const activeBooking = await Booking.findOne({
-            slotId: slot._id,
+            slotId: slotData._id,
             status: "ACTIVE",
           });
           if (activeBooking) {
@@ -102,7 +131,7 @@ async function handleGetAllSlots(req, res) {
     }
 
     return res.status(200).json({
-      count: slots.length,
+      count: slotsWithOccupancy.length,
       slots: slotsWithOccupancy,
       nextAvailableTime,
     });
@@ -135,10 +164,13 @@ async function handleSyncOwnerServices(req, res) {
       return res.status(400).json({ error: "Owner building details not found." });
     }
 
-    await Slot.updateMany(
-      { ownerId, slotType },
-      { $set: { hourlyRate: Number(hourlyRate) } }
-    );
+    const ownerHasCoords = owner.location?.coordinates?.length === 2;
+    const updateFields = { hourlyRate: Number(hourlyRate) };
+    if (ownerHasCoords) {
+      updateFields.location = owner.location;
+    }
+
+    await Slot.updateMany({ ownerId, slotType }, { $set: updateFields });
 
     const currentSlots = await Slot.find({ ownerId, slotType }).sort({ slotNumber: 1 });
     const currentCount = currentSlots.length;
@@ -150,7 +182,7 @@ async function handleSyncOwnerServices(req, res) {
 
       for (let i = 0; i < slotsToAdd; i++) {
         const slotNumId = `${slotType === "EV" ? "EV" : "B1"}-${String(nextIndex + i).padStart(2, "0")}`;
-        newSlotsData.push({
+        const slotDoc = {
           ownerId,
           buildingName: owner.buildingName,
           locality: owner.locality,
@@ -160,7 +192,11 @@ async function handleSyncOwnerServices(req, res) {
           slotType,
           hourlyRate: Number(hourlyRate),
           status: "AVAILABLE",
-        });
+        };
+        if (ownerHasCoords) {
+          slotDoc.location = owner.location;
+        }
+        newSlotsData.push(slotDoc);
       }
 
       const insertedSlots = await Slot.insertMany(newSlotsData);

@@ -41,9 +41,21 @@ const userSchema = new mongoose.Schema(
       enum: ["PARKING", "EV", "BOTH"],
       default: null,
     },
+    location: {
+      type: {
+        type: String,
+        enum: ["Point"],
+      },
+      coordinates: {
+        type: [Number], // [longitude, latitude]
+        default: undefined,
+      },
+    },
   },
   { timestamps: true }
 );
+
+userSchema.index({ location: "2dsphere" });
 
 const User = mongoose.model("user", userSchema);
 module.exports = User;

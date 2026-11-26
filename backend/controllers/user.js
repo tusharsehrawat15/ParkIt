@@ -1,8 +1,10 @@
 const User = require("../models/user");
 const Slot = require("../models/slot");
+const Otp = require("../models/otp");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { getIO } = require("../socket");
+const { sendOtpEmail } = require("../utils/mailer");
 
 function parseGeoPoint(lat, lng) {
   const numLat = Number(lat);
@@ -22,7 +24,50 @@ function parseGeoPoint(lat, lng) {
   return { type: "Point", coordinates: [numLng, numLat] };
 }
 
-// User Sign Up
+function generateOtp() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+function setAuthCookie(res, user) {
+  const token = jwt.sign(
+    { id: user._id, role: user.role, name: user.name },
+    process.env.JWT_SECRET,
+    { expiresIn: "7d" }
+  );
+
+  res.cookie("token", token, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
+}
+
+// 1. Send Signup Verification OTP
+async function handleSendSignupOtp(req, res) {
+  try {
+    const email = (req.body?.email || "").trim().toLowerCase();
+    if (!email) {
+      return res.status(400).json({ error: "Please enter a valid email address" });
+    }
+
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(409).json({ error: "Email is already registered" });
+    }
+
+    const otp = generateOtp();
+    await Otp.deleteMany({ email, purpose: "SIGNUP" });
+    await Otp.create({ email, otp, purpose: "SIGNUP" });
+    await sendOtpEmail(email, otp, "SIGNUP");
+
+    return res.status(200).json({ message: "Verification code sent to your email" });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+}
+
+// 2. User Sign Up
 async function handleUserSignup(req, res) {
   try {
     const {
@@ -37,11 +82,14 @@ async function handleUserSignup(req, res) {
       buildingType,
       lat,
       lng,
+      otp,
     } = req.body || {};
 
     if (!name || !email || !password || !role) {
       return res.status(400).json({ error: "Name, email, password, and role are required" });
     }
+
+    const normalizedEmail = email.trim().toLowerCase();
 
     if (role === "DRIVER" && !vehicleNumber) {
       return res.status(400).json({ error: "Vehicle number is required for Vehicle Owners" });
@@ -52,16 +100,32 @@ async function handleUserSignup(req, res) {
       });
     }
 
-    const existingUser = await User.findOne({ email });
+    const existingUser = await User.findOne({ email: normalizedEmail });
     if (existingUser) {
       return res.status(409).json({ error: "Email is already registered" });
+    }
+
+    // Enforce email OTP verification outside automated Jest runs
+    if (process.env.NODE_ENV !== "test") {
+      if (!otp) {
+        return res.status(400).json({ error: "Email verification code is required" });
+      }
+      const validOtp = await Otp.findOne({
+        email: normalizedEmail,
+        otp: String(otp).trim(),
+        purpose: "SIGNUP",
+      });
+      if (!validOtp) {
+        return res.status(400).json({ error: "Invalid or expired verification code" });
+      }
+      await Otp.deleteMany({ email: normalizedEmail, purpose: "SIGNUP" });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const userPayload = {
       name,
-      email,
+      email: normalizedEmail,
       password: hashedPassword,
       role,
       vehicleNumber: role === "DRIVER" ? vehicleNumber : null,
@@ -91,10 +155,11 @@ async function handleUserSignup(req, res) {
   }
 }
 
-// User Login
+// 3. User Login
 async function handleUserLogin(req, res) {
   try {
-    const { email, password } = req.body || {};
+    const email = (req.body?.email || "").trim().toLowerCase();
+    const password = req.body?.password;
 
     if (!email || !password) {
       return res.status(400).json({ error: "Email and password are required" });
@@ -110,18 +175,7 @@ async function handleUserLogin(req, res) {
       return res.status(401).json({ error: "Invalid email or password" });
     }
 
-    const token = jwt.sign(
-      { id: user._id, role: user.role, name: user.name },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
-
-    res.cookie("token", token, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
-      maxAge: 7 * 24 * 60 * 60 * 1000,
-    });
+    setAuthCookie(res, user);
 
     return res.status(200).json({
       message: "Login successful",
@@ -136,7 +190,76 @@ async function handleUserLogin(req, res) {
   }
 }
 
-// Get Current Logged-In User
+// 4. Forgot Password — Send Reset OTP
+async function handleForgotPassword(req, res) {
+  try {
+    const email = (req.body?.email || "").trim().toLowerCase();
+    if (!email) {
+      return res.status(400).json({ error: "Please enter your registered email" });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(404).json({ error: "No account found with that email" });
+    }
+
+    const otp = generateOtp();
+    await Otp.deleteMany({ email, purpose: "RESET" });
+    await Otp.create({ email, otp, purpose: "RESET" });
+    await sendOtpEmail(email, otp, "RESET");
+
+    return res.status(200).json({ message: "Verification code sent to your email" });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+}
+
+// 5. Reset Password — Verify OTP, Set New Password & Log User In
+async function handleResetPassword(req, res) {
+  try {
+    const email = (req.body?.email || "").trim().toLowerCase();
+    const otp = String(req.body?.otp || "").trim();
+    const newPassword = req.body?.newPassword;
+
+    if (!email || !otp || !newPassword) {
+      return res.status(400).json({ error: "Email, verification code, and new password are required" });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: "New password must be at least 6 characters" });
+    }
+
+    const validOtp = await Otp.findOne({ email, otp, purpose: "RESET" });
+    if (!validOtp) {
+      return res.status(400).json({ error: "Invalid or expired verification code" });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
+    await Otp.deleteMany({ email, purpose: "RESET" });
+
+    // Log them in right away after setting the new password
+    setAuthCookie(res, user);
+
+    return res.status(200).json({
+      message: "Password updated and logged in successfully",
+      user: {
+        id: user._id,
+        name: user.name,
+        role: user.role,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+}
+
+// 6. Get Current Logged-In User
 async function handleGetCurrentUser(req, res) {
   try {
     const user = await User.findById(req.user.id).select("-password");
@@ -149,14 +272,16 @@ async function handleGetCurrentUser(req, res) {
   }
 }
 
-// Update Building Map Pin Location (OWNER only)
+// 7. Update Building Map Pin Location (OWNER only)
 async function handleUpdateBuildingLocation(req, res) {
   try {
     const { lat, lng } = req.body || {};
     const geoPoint = parseGeoPoint(lat, lng);
 
     if (!geoPoint) {
-      return res.status(400).json({ error: "Valid latitude (-90 to 90) and longitude (-180 to 180) are required." });
+      return res.status(400).json({
+        error: "Valid latitude (-90 to 90) and longitude (-180 to 180) are required.",
+      });
     }
 
     const updatedUser = await User.findByIdAndUpdate(
@@ -169,7 +294,6 @@ async function handleUpdateBuildingLocation(req, res) {
       return res.status(404).json({ error: "Owner not found" });
     }
 
-    // Keep all existing slots in this building synced with the new map pin
     await Slot.updateMany(
       { ownerId: req.user.id },
       { $set: { location: geoPoint } }
@@ -187,16 +311,106 @@ async function handleUpdateBuildingLocation(req, res) {
   }
 }
 
-// Logout
+// 8. Logout
 async function handleUserLogout(req, res) {
   res.clearCookie("token");
   return res.status(200).json({ message: "Logged out successfully" });
 }
 
+// 9. Update Profile Details
+async function handleUpdateProfile(req, res) {
+  try {
+    const { name, vehicleNumber, buildingName, locality, city, buildingType } = req.body || {};
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    if (name && name.trim()) user.name = name.trim();
+    if (user.role === "DRIVER" && vehicleNumber !== undefined) {
+      user.vehicleNumber = vehicleNumber.trim().toUpperCase();
+    }
+    if (user.role === "OWNER") {
+      if (buildingName) user.buildingName = buildingName.trim();
+      if (locality) user.locality = locality.trim();
+      if (city) user.city = city.trim();
+      if (buildingType) user.buildingType = buildingType;
+    }
+
+    await user.save();
+    const safeUser = user.toObject();
+    delete safeUser.password;
+
+    return res.status(200).json({ message: "Profile updated", user: safeUser });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+}
+
+// 10. Delete Account Step 1 — Verify Password & Send Email OTP
+async function handleSendDeleteOtp(req, res) {
+  try {
+    const { password } = req.body || {};
+    if (!password) {
+      return res.status(400).json({ error: "Please enter your current password" });
+    }
+
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(401).json({ error: "Incorrect password" });
+    }
+
+    const otp = generateOtp();
+    await Otp.deleteMany({ email: user.email, purpose: "DELETE" });
+    await Otp.create({ email: user.email, otp, purpose: "DELETE" });
+    await sendOtpEmail(user.email, otp, "DELETE");
+
+    return res.status(200).json({ message: "Verification code sent to your email" });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+}
+
+// 11. Delete Account Step 2 — Verify OTP & Permanently Delete
+async function handleDeleteAccount(req, res) {
+  try {
+    const otp = String(req.body?.otp || "").trim();
+    if (!otp) {
+      return res.status(400).json({ error: "Verification code is required" });
+    }
+
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const validOtp = await Otp.findOne({ email: user.email, otp, purpose: "DELETE" });
+    if (!validOtp) {
+      return res.status(400).json({ error: "Invalid or expired verification code" });
+    }
+
+    if (user.role === "OWNER") {
+      await Slot.deleteMany({ ownerId: user._id });
+    }
+    await Otp.deleteMany({ email: user.email });
+    await User.findByIdAndDelete(user._id);
+
+    res.clearCookie("token");
+    return res.status(200).json({ message: "Account permanently deleted" });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+}
+
 module.exports = {
+  handleSendSignupOtp,
   handleUserSignup,
   handleUserLogin,
+  handleForgotPassword,
+  handleResetPassword,
   handleGetCurrentUser,
   handleUserLogout,
   handleUpdateBuildingLocation,
+  handleUpdateProfile,
+  handleSendDeleteOtp,
+  handleDeleteAccount,
 };

@@ -24,6 +24,16 @@ const slotSchema = new mongoose.Schema(
       enum: ["PARKING", "EV", "BOTH"],
       required: true,
     },
+    location: {
+      type: {
+        type: String,
+        enum: ["Point"],
+      },
+      coordinates: {
+        type: [Number], // [longitude, latitude]
+        default: undefined,
+      },
+    },
     slotNumber: {
       type: String,
       required: true,
@@ -50,6 +60,8 @@ const slotSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+slotSchema.index({ location: "2dsphere" });
 
 const Slot = mongoose.model("slot", slotSchema);
 

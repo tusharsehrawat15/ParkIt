@@ -11,6 +11,7 @@ const app = require("../app");
 const User = require("../models/user");
 const { connectRedis } = require("../redis");
 const { initSocket } = require("../socket");
+const Slot = require("../models/slot");
 
 let server;
 let mongoServer;
@@ -28,6 +29,7 @@ beforeAll(async () => {
   await mongoose.connect(uri, {
     runtimeAdapters: { os: require("os") },
   });
+  await Slot.createIndexes();
   await connectRedis();
 }, 120000);
 
@@ -181,5 +183,55 @@ describe("3. Concurrency & Double-Booking Stress Test", () => {
     expect(succeeded.length).toBe(1);
     expect(rejectedCleanly.length).toBe(CONCURRENT_USERS - 1);
     expect(serverErrors.length).toBe(0);
+  });
+});
+
+
+describe("4. Geospatial Pinning & Nearest Parking Search", () => {
+  test("Owner pins building location and driver receives nearest parkings sorted by distance", async () => {
+    // Pin the first owner's building (Tech Park Plaza) in Katraj, Pune
+    const pinRes = await request(app)
+      .put("/api/user/location")
+      .set("Cookie", ownerCookie)
+      .send({ lat: 18.4575, lng: 73.8677 });
+    expect(pinRes.statusCode).toBe(200);
+    expect(pinRes.body.location.coordinates).toEqual([73.8677, 18.4575]);
+
+    // Create a second owner farther away in Hinjewadi, Pune
+    await request(app).post("/api/user/signup").send({
+      name: "Far Owner",
+      email: "farowner@test.com",
+      password: "password123",
+      role: "OWNER",
+      buildingName: "Hinjewadi Hub",
+      locality: "Hinjewadi",
+      city: "Pune",
+      buildingType: "PARKING",
+      lat: 18.5913,
+      lng: 73.7389,
+    });
+    const farLogin = await request(app).post("/api/user/login").send({
+      email: "farowner@test.com",
+      password: "password123",
+    });
+    const farOwnerCookie = farLogin.headers["set-cookie"];
+
+    await request(app)
+      .post("/api/slot/sync")
+      .set("Cookie", farOwnerCookie)
+      .send({ slotType: "STANDARD", hourlyRate: 80, totalSlots: 1 });
+
+    // Driver searches from right next to Katraj
+    const nearbyRes = await request(app)
+      .get("/api/slot?lat=18.4580&lng=73.8680")
+      .set("Cookie", driverCookie);
+    expect(nearbyRes.statusCode).toBe(200);
+    expect(nearbyRes.body.slots.length).toBeGreaterThanOrEqual(2);
+
+    // Closest building should come first
+    expect(nearbyRes.body.slots[0].buildingName).toBe("Tech Park Plaza");
+    expect(nearbyRes.body.slots[0].distanceKm).toBeLessThan(1);
+    expect(nearbyRes.body.slots[1].buildingName).toBe("Hinjewadi Hub");
+    expect(nearbyRes.body.slots[1].distanceKm).toBeGreaterThan(10);
   });
 });

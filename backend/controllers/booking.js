@@ -60,7 +60,7 @@ async function handleLockSlot(req, res) {
 async function handleConfirmBooking(req, res) {
   try {
     const { slotId } = req.params;
-    const { estimatedDuration } = req.body;
+    const { estimatedDuration } = req.body || {};
     const driverId = req.user.id;
 
     if (!estimatedDuration || estimatedDuration <= 0) {

@@ -57,6 +57,10 @@ const slotSchema = new mongoose.Schema(
       ref: "user",
       default: null,
     },
+    lockExpiresAt: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true }
 );

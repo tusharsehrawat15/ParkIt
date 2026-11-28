@@ -7,6 +7,7 @@ import DriverDashboard from "./components/DriverDashboard";
 import NotificationBell from "./components/NotificationBell";
 import OwnerDashboard from "./components/OwnerDashboard";
 import { apiRequest, API_BASE_URL } from "./lib/api";
+import InstallAppButton from "./components/InstallAppButton";
 
 function formatNotification(n) {
   const created = n.createdAt ? new Date(n.createdAt) : new Date();
@@ -112,7 +113,12 @@ export default function App() {
   }
 
   if (!user) {
-    return <AuthPage onAuthSuccess={setUser} />;
+    return (
+      <AuthPage
+        onAuthSuccess={setUser}
+        installButton={<InstallAppButton />}
+      />
+    );
   }
 
   return (

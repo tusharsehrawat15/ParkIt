@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, CircleMarker, Popup, useMap } from "react-leaflet";
 import { io } from "socket.io-client";
 import {
   Home,
@@ -25,6 +25,20 @@ import { apiRequest } from "../lib/api";
 import BookSlotView from "./BookSlotView";
 import BookingDetailsModal from "./BookingDetailsModal";
 
+const CLAIM_DURATIONS = [
+  { label: "30m", hours: 0.5 },
+  { label: "1h", hours: 1 },
+  { label: "2h", hours: 2 },
+  { label: "4h", hours: 4 },
+];
+
+function formatCountdown(secs) {
+  if (secs === null || secs === undefined) return "0:00";
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
 function RecenterMap({ center }) {
   const map = useMap();
   useEffect(() => {
@@ -41,10 +55,10 @@ export default function DriverDashboard({ user, onUserUpdate, onLogout, onNotify
   const [search, setSearch] = useState("");
   const [slotFilter, setSlotFilter] = useState("ALL");
   const [coords, setCoords] = useState(null);
-  const [gpsStatus, setGpsStatus] = useState("Detecting GPS...");
+  const [gpsStatus, setGpsStatus] = useState("Find Nearby");
   const [toast, setToast] = useState(null);
 
-  const [selectedBuilding, setSelectedBuilding] = useState(null);
+  const [selectedBuildingKey, setSelectedBuildingKey] = useState(null);
   const [selectedBooking, setSelectedBooking] = useState(null);
   const [actionLoading, setActionLoading] = useState(false);
 
@@ -58,6 +72,11 @@ export default function DriverDashboard({ user, onUserUpdate, onLogout, onNotify
   const [deleteStep, setDeleteStep] = useState(1);
   const [deletePassword, setDeletePassword] = useState("");
   const [deleteOtp, setDeleteOtp] = useState("");
+
+  // Waitlist & Claim Slot UX
+  const [waitlistStatus, setWaitlistStatus] = useState(null);
+  const [waitlistSecondsLeft, setWaitlistSecondsLeft] = useState(null);
+  const [claimDuration, setClaimDuration] = useState(1);
 
   const showToast = (message, type = "success") => {
     setToast({ message, type });
@@ -74,12 +93,14 @@ export default function DriverDashboard({ user, onUserUpdate, onLogout, onNotify
       if (search.trim()) params.set("search", search.trim());
       if (slotFilter !== "ALL") params.set("slotType", slotFilter);
 
-      const [slotRes, histRes] = await Promise.all([
+      const [slotRes, histRes, waitRes] = await Promise.all([
         apiRequest(`/api/slot?${params.toString()}`),
         apiRequest("/api/booking/my-history"),
+        apiRequest("/api/waitlist/my-status"),
       ]);
       setSlots(slotRes.slots || []);
-      setHistory(histRes.history || []);
+      setHistory(Array.isArray(histRes) ? histRes : histRes.history || histRes.bookings || []);
+      setWaitlistStatus(waitRes?.entry ? waitRes : null);
     } catch (err) {
       showToast(err.message, "error");
     } finally {
@@ -88,6 +109,11 @@ export default function DriverDashboard({ user, onUserUpdate, onLogout, onNotify
   }, [coords, search, slotFilter]);
 
   const detectLocation = useCallback(() => {
+    if (coords) {
+      setCoords(null);
+      setGpsStatus("Find Nearby");
+      return;
+    }
     if (!navigator.geolocation) {
       setGpsStatus("GPS unavailable");
       return;
@@ -103,11 +129,7 @@ export default function DriverDashboard({ user, onUserUpdate, onLogout, onNotify
       },
       () => setGpsStatus("GPS off")
     );
-  }, []);
-
-  useEffect(() => {
-    detectLocation();
-  }, [detectLocation]);
+  }, [coords]);
 
   useEffect(() => {
     fetchDashboardData();
@@ -117,8 +139,40 @@ export default function DriverDashboard({ user, onUserUpdate, onLogout, onNotify
     const socket = io();
     socket.on("slotsUpdated", fetchDashboardData);
     socket.on("bookingsUpdated", fetchDashboardData);
+    socket.on("waitlistUpdated", fetchDashboardData);
     return () => socket.disconnect();
   }, [fetchDashboardData]);
+
+  // Live countdown timer for READY waitlist offers
+  useEffect(() => {
+    const entry = waitlistStatus?.entry;
+    if (!entry || entry.status !== "READY" || !entry.expiresAt) {
+      setWaitlistSecondsLeft(null);
+      return;
+    }
+
+    const computeRemaining = () =>
+      Math.max(0, Math.floor((new Date(entry.expiresAt).getTime() - Date.now()) / 1000));
+
+    const initial = computeRemaining();
+    setWaitlistSecondsLeft(initial);
+
+    if (initial <= 0) {
+      fetchDashboardData();
+      return;
+    }
+
+    const timer = setInterval(() => {
+      const rem = computeRemaining();
+      setWaitlistSecondsLeft(rem);
+      if (rem <= 0) {
+        clearInterval(timer);
+        fetchDashboardData();
+      }
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [waitlistStatus, fetchDashboardData]);
 
   const activeBooking = useMemo(
     () => history.find((b) => b.status === "ACTIVE") || null,
@@ -136,6 +190,7 @@ export default function DriverDashboard({ user, onUserUpdate, onLogout, onNotify
       const key = slot.ownerId || slot.buildingName;
       if (!map.has(key)) {
         map.set(key, {
+          key,
           ownerId: slot.ownerId,
           buildingName: slot.buildingName,
           locality: slot.locality,
@@ -144,21 +199,30 @@ export default function DriverDashboard({ user, onUserUpdate, onLogout, onNotify
           distanceKm: slot.distanceKm,
           standardAvailable: [],
           evAvailable: [],
+          standardTotal: 0,
+          evTotal: 0,
           standardRate: null,
           evRate: null,
         });
       }
       const b = map.get(key);
       if (slot.slotType === "EV") {
+        b.evTotal += 1;
         b.evRate = slot.hourlyRate;
         if (slot.status === "AVAILABLE") b.evAvailable.push(slot);
       } else {
+        b.standardTotal += 1;
         b.standardRate = slot.hourlyRate;
         if (slot.status === "AVAILABLE") b.standardAvailable.push(slot);
       }
     }
     return Array.from(map.values());
   }, [slots]);
+
+  const selectedBuilding = useMemo(
+    () => buildings.find((b) => b.key === selectedBuildingKey) || null,
+    [buildings, selectedBuildingKey]
+  );
 
   const handleBookSlot = async (slot, durationHours) => {
     setActionLoading(true);
@@ -170,10 +234,10 @@ export default function DriverDashboard({ user, onUserUpdate, onLogout, onNotify
       });
       onNotify?.(
         "Booking Confirmed",
-        `${slot.buildingName} — Slot ${slot.slotNumber} (${durationHours} hr)`,
+        `${slot.buildingName} — ${slot.slotType === "EV" ? "EV Charging" : "Parking"} (${durationHours} hr)`,
         "booking"
       );
-      setSelectedBuilding(null);
+      setSelectedBuildingKey(null);
       setActiveTab("activity");
       showToast("Booking confirmed! Your live session is now active.");
       fetchDashboardData();
@@ -184,11 +248,45 @@ export default function DriverDashboard({ user, onUserUpdate, onLogout, onNotify
     }
   };
 
+  const handleClaimWaitlistSlot = async () => {
+    const entry = waitlistStatus?.entry;
+    const assignedSlot = entry?.assignedSlotId;
+    const slotId = assignedSlot?._id || assignedSlot;
+    if (!slotId) {
+      showToast("Assigned slot not found. Refreshing...", "error");
+      fetchDashboardData();
+      return;
+    }
+
+    setActionLoading(true);
+    try {
+      await apiRequest(`/api/booking/confirm/${slotId}`, {
+        method: "POST",
+        body: JSON.stringify({ estimatedDuration: Number(claimDuration) }),
+      });
+      onNotify?.(
+        "Booking Confirmed",
+        `${entry.buildingName} — ${entry.slotType === "EV" ? "EV Charging" : "Parking"} (${claimDuration} hr)`,
+        "booking"
+      );
+      setWaitlistStatus(null);
+      setActiveTab("activity");
+      showToast("Waitlist slot claimed! Your live session is now active.");
+      fetchDashboardData();
+    } catch (err) {
+      showToast(err.message, "error");
+      fetchDashboardData();
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   const handleCheckout = async () => {
     if (!activeBooking) return;
     setActionLoading(true);
     try {
-      const res = await apiRequest(`/api/booking/release/${activeBooking.slotId}`, {
+      const slotId = activeBooking.slotId?._id || activeBooking.slotId;
+      const res = await apiRequest(`/api/booking/release/${slotId}`, {
         method: "POST",
       });
       onNotify?.(
@@ -197,6 +295,39 @@ export default function DriverDashboard({ user, onUserUpdate, onLogout, onNotify
         "checkout"
       );
       showToast(`Checked out! Final bill: ₹${res.totalAmount}`);
+      fetchDashboardData();
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleJoinWaitlist = async (ownerId, slotType) => {
+    setActionLoading(true);
+    try {
+      const res = await apiRequest("/api/waitlist/join", {
+        method: "POST",
+        body: JSON.stringify({ ownerId, slotType }),
+      });
+      showToast(res.message || "Joined waitlist!");
+      onNotify?.("Joined Waitlist", res.message, "waitlist");
+      setSelectedBuildingKey(null);
+      setActiveTab("activity");
+      fetchDashboardData();
+    } catch (err) {
+      showToast(err.message, "error");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleLeaveWaitlist = async () => {
+    setActionLoading(true);
+    try {
+      await apiRequest("/api/waitlist/leave", { method: "DELETE" });
+      showToast("Removed from waitlist.");
+      setWaitlistStatus(null);
       fetchDashboardData();
     } catch (err) {
       showToast(err.message, "error");
@@ -267,15 +398,20 @@ export default function DriverDashboard({ user, onUserUpdate, onLogout, onNotify
   };
 
   const mapCenter = coords ? [coords.lat, coords.lng] : [18.5204, 73.8567];
+  const readyEntry = waitlistStatus?.entry?.status === "READY" ? waitlistStatus.entry : null;
+  const readyRate = readyEntry?.assignedSlotId?.hourlyRate || 0;
+  const readyEstimatedAmount = readyRate ? Math.round(readyRate * claimDuration) : 0;
 
   if (selectedBuilding) {
     return (
       <BookSlotView
         building={selectedBuilding}
         user={user}
-        onBack={() => setSelectedBuilding(null)}
+        onBack={() => setSelectedBuildingKey(null)}
         onConfirm={handleBookSlot}
+        onJoinWaitlist={handleJoinWaitlist}
         loading={actionLoading}
+        waitlistStatus={waitlistStatus}
       />
     );
   }
@@ -303,6 +439,28 @@ export default function DriverDashboard({ user, onUserUpdate, onLogout, onNotify
       {/* ==================== HOME TAB ==================== */}
       {activeTab === "home" && (
         <div className="space-y-4">
+          {/* Urgent Banner if Waitlist Slot is READY */}
+          {readyEntry && (
+            <div className="rounded-2xl border border-emerald-500/50 bg-emerald-500/15 p-3.5 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-emerald-400 flex items-center gap-1.5">
+                  <Clock className="h-3.5 w-3.5 shrink-0" />
+                  Slot Ready! Claim in {formatCountdown(waitlistSecondsLeft)}
+                </p>
+                <p className="text-xs text-zinc-200 truncate mt-0.5">
+                  {readyEntry.buildingName} •{" "}
+                  {readyEntry.slotType === "EV" ? "EV Charging" : "Parking"}
+                </p>
+              </div>
+              <button
+                onClick={() => setActiveTab("activity")}
+                className="shrink-0 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold px-3.5 py-2 text-xs transition cursor-pointer"
+              >
+                Claim Now
+              </button>
+            </div>
+          )}
+
           <div className="relative">
             <Search className="absolute left-3.5 top-3 h-4 w-4 text-zinc-500" />
             <input
@@ -354,9 +512,30 @@ export default function DriverDashboard({ user, onUserUpdate, onLogout, onNotify
               />
               <RecenterMap center={mapCenter} />
               {coords && (
-                <Marker position={[coords.lat, coords.lng]}>
-                  <Popup>You are here</Popup>
-                </Marker>
+                <>
+                  <CircleMarker
+                    center={[coords.lat, coords.lng]}
+                    radius={16}
+                    pathOptions={{
+                      color: "#10b981",
+                      fillColor: "#10b981",
+                      fillOpacity: 0.22,
+                      weight: 0,
+                    }}
+                  />
+                  <CircleMarker
+                    center={[coords.lat, coords.lng]}
+                    radius={7}
+                    pathOptions={{
+                      color: "#ffffff",
+                      fillColor: "#10b981",
+                      fillOpacity: 1,
+                      weight: 2.5,
+                    }}
+                  >
+                    <Popup>You are here</Popup>
+                  </CircleMarker>
+                </>
               )}
               {buildings.map((b) => {
                 const c = b.location?.coordinates;
@@ -391,9 +570,12 @@ export default function DriverDashboard({ user, onUserUpdate, onLogout, onNotify
             <div className="space-y-3">
               {buildings.map((b) => {
                 const totalOpen = b.standardAvailable.length + b.evAvailable.length;
+                const standardFull = b.standardTotal > 0 && b.standardAvailable.length === 0;
+                const evFull = b.evTotal > 0 && b.evAvailable.length === 0;
+
                 return (
                   <div
-                    key={b.ownerId || b.buildingName}
+                    key={b.key}
                     className="rounded-2xl border border-zinc-800/90 bg-[#111622] p-4 space-y-3"
                   >
                     <div className="flex items-start justify-between gap-2">
@@ -401,7 +583,7 @@ export default function DriverDashboard({ user, onUserUpdate, onLogout, onNotify
                         <h3 className="font-bold text-base text-zinc-100">{b.buildingName}</h3>
                         <p className="text-xs text-zinc-400 flex items-center gap-1 mt-0.5">
                           <MapPin className="h-3.5 w-3.5 text-rose-400" />
-                          {b.locality}, {b.city}
+                          {[b.locality, b.city].filter(Boolean).join(", ") || "Location not set"}
                           {typeof b.distanceKm === "number" && (
                             <span className="text-emerald-400 font-medium ml-1">
                               • {b.distanceKm} km
@@ -409,21 +591,33 @@ export default function DriverDashboard({ user, onUserUpdate, onLogout, onNotify
                           )}
                         </p>
                       </div>
-                      <span className="rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2.5 py-1 text-[11px] font-semibold text-emerald-400">
-                        • {totalOpen} Slots Open
+                      <span
+                        className={`rounded-full px-2.5 py-1 text-[11px] font-semibold border ${
+                          totalOpen > 0
+                            ? "bg-emerald-500/15 border-emerald-500/30 text-emerald-400"
+                            : "bg-amber-500/15 border-amber-500/30 text-amber-400"
+                        }`}
+                      >
+                        • {totalOpen > 0 ? `${totalOpen} Slots Open` : "Full"}
                       </span>
                     </div>
 
                     <div className="flex items-center justify-between text-xs text-zinc-300">
-                      <div className="space-x-3">
-                        {b.standardRate && (
-                          <span>
+                      <div className="flex items-center flex-wrap gap-x-3 gap-y-1">
+                        {b.standardTotal > 0 && (
+                          <span className="inline-flex items-center gap-1">
                             Parking <strong className="text-emerald-400">₹{b.standardRate}/hr</strong>
+                            {standardFull && (
+                              <span className="text-[10px] font-semibold text-amber-400">(Full)</span>
+                            )}
                           </span>
                         )}
-                        {b.evRate && (
-                          <span>
+                        {b.evTotal > 0 && (
+                          <span className="inline-flex items-center gap-1">
                             EV <strong className="text-cyan-400">₹{b.evRate}/hr</strong>
+                            {evFull && (
+                              <span className="text-[10px] font-semibold text-amber-400">(Full)</span>
+                            )}
                           </span>
                         )}
                       </div>
@@ -438,13 +632,22 @@ export default function DriverDashboard({ user, onUserUpdate, onLogout, onNotify
                         Directions
                       </button>
 
-                      <button
-                        disabled={!!activeBooking || totalOpen === 0}
-                        onClick={() => setSelectedBuilding(b)}
-                        className="flex-1 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold py-2 text-xs transition cursor-pointer disabled:opacity-40"
-                      >
-                        {activeBooking ? "Session Active" : totalOpen > 0 ? "Book Slot" : "Full"}
-                      </button>
+                      {totalOpen === 0 && !activeBooking ? (
+                        <button
+                          onClick={() => setSelectedBuildingKey(b.key)}
+                          className="flex-1 rounded-xl border border-amber-500/40 bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 font-semibold py-2 text-xs transition cursor-pointer"
+                        >
+                          Join Waitlist
+                        </button>
+                      ) : (
+                        <button
+                          disabled={!!activeBooking}
+                          onClick={() => setSelectedBuildingKey(b.key)}
+                          className="flex-1 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-semibold py-2 text-xs transition cursor-pointer disabled:opacity-40"
+                        >
+                          {activeBooking ? "Session Active" : "Book Slot"}
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -470,11 +673,10 @@ export default function DriverDashboard({ user, onUserUpdate, onLogout, onNotify
                   <span className="text-[11px] font-semibold text-emerald-400 uppercase tracking-wider">
                     • Live Session
                   </span>
-                  <h3 className="font-bold text-base mt-0.5">
-                    {activeBooking.buildingName} — Slot {activeBooking.slotNumber}
-                  </h3>
+                  <h3 className="font-bold text-base mt-0.5">{activeBooking.buildingName}</h3>
                   <p className="text-xs text-zinc-300 mt-0.5">
-                    {activeBooking.locality}, {activeBooking.city} • ₹{activeBooking.hourlyRate}/hr
+                    {[activeBooking.locality, activeBooking.city].filter(Boolean).join(", ")} • ₹
+                    {activeBooking.hourlyRate}/hr
                   </p>
                 </div>
                 <button
@@ -492,6 +694,105 @@ export default function DriverDashboard({ user, onUserUpdate, onLogout, onNotify
             )}
           </div>
 
+          {waitlistStatus?.entry && (
+            <div className="space-y-2.5">
+              <h2 className="text-sm font-bold text-zinc-200">Active Waitlist</h2>
+
+              {readyEntry ? (
+                <div className="rounded-2xl border border-emerald-500/50 bg-emerald-950/25 p-4 space-y-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-400 uppercase tracking-wider">
+                        • Slot Ready for You
+                      </span>
+                      <p className="text-base font-bold text-zinc-100 mt-0.5">
+                        {readyEntry.buildingName}
+                      </p>
+                      <p className="text-xs text-zinc-300 mt-0.5">
+                        {readyEntry.slotType === "EV" ? "EV Charging" : "Parking"}
+                        {readyEntry.assignedSlotId?.slotNumber
+                          ? ` • Slot ${readyEntry.assignedSlotId.slotNumber}`
+                          : ""}
+                        {readyRate ? ` • ₹${readyRate}/hr` : ""}
+                      </p>
+                    </div>
+
+                    <div className="shrink-0 rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3 py-1.5 text-center">
+                      <p className="text-[10px] uppercase tracking-wider text-emerald-300">
+                        Expires in
+                      </p>
+                      <p className="text-sm font-bold text-emerald-400 tabular-nums">
+                        {formatCountdown(waitlistSecondsLeft)}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <p className="text-[11px] font-medium text-zinc-400">Select Stay Duration</p>
+                    <div className="grid grid-cols-4 gap-2">
+                      {CLAIM_DURATIONS.map((opt) => (
+                        <button
+                          key={opt.label}
+                          type="button"
+                          onClick={() => setClaimDuration(opt.hours)}
+                          className={`rounded-xl py-2 text-xs font-semibold transition cursor-pointer ${
+                            claimDuration === opt.hours
+                              ? "bg-emerald-500 text-zinc-950"
+                              : "border border-zinc-700 bg-zinc-900/80 text-zinc-300 hover:border-zinc-600"
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      disabled={actionLoading}
+                      onClick={handleClaimWaitlistSlot}
+                      className="flex-1 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold py-2.5 text-xs transition cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20"
+                    >
+                      {actionLoading ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        `Claim & Book${readyEstimatedAmount ? ` (₹${readyEstimatedAmount})` : ""}`
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={actionLoading}
+                      onClick={handleLeaveWaitlist}
+                      className="rounded-xl border border-rose-500/40 bg-rose-500/15 hover:bg-rose-500/25 px-3.5 py-2.5 text-xs font-semibold text-rose-300 transition cursor-pointer disabled:opacity-50"
+                    >
+                      Decline
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-2xl border border-amber-500/40 bg-amber-950/15 p-4 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-bold text-zinc-100">
+                      {waitlistStatus.entry.buildingName}
+                    </p>
+                    <p className="text-xs text-zinc-400 mt-0.5">
+                      {waitlistStatus.entry.slotType === "EV" ? "EV Charging" : "Parking"} •
+                      Position #{waitlistStatus.position} of {waitlistStatus.totalWaiting}
+                    </p>
+                  </div>
+                  <button
+                    disabled={actionLoading}
+                    onClick={handleLeaveWaitlist}
+                    className="rounded-xl border border-rose-500/40 bg-rose-500/15 hover:bg-rose-500/25 px-3 py-1.5 text-xs font-semibold text-rose-300 transition cursor-pointer shrink-0 disabled:opacity-50"
+                  >
+                    Leave
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="space-y-2.5">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-bold text-zinc-200">Booking History</h2>
@@ -506,35 +807,41 @@ export default function DriverDashboard({ user, onUserUpdate, onLogout, onNotify
               </div>
             ) : (
               <div className="space-y-2.5">
-                {completedHistory.map((item) => (
-                  <div
-                    key={item._id}
-                    onClick={() => setSelectedBooking(item)}
-                    className="rounded-2xl border border-zinc-800 bg-[#111622] hover:border-emerald-500/40 p-4 flex items-center justify-between transition cursor-pointer"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="h-9 w-9 rounded-xl bg-zinc-900 border border-zinc-800 flex items-center justify-center text-emerald-400">
-                        <Car className="h-4 w-4" />
-                      </div>
-                      <div>
-                        <p className="text-sm font-semibold text-zinc-100">{item.buildingName}</p>
-                        <p className="text-xs text-zinc-400">
-                          {item.slotType === "EV" ? "EV Charging" : "Parking"} •{" "}
-                          {item.hoursParked ? `${item.hoursParked} hr` : `${item.estimatedDuration || 1} hr`}
-                        </p>
-                      </div>
-                    </div>
+                {completedHistory.map((item) => {
+                  const isEv =
+                    (item.slotType || item.slotId?.slotType) === "EV" ||
+                    String(item.slotNumber || item.slotId?.slotNumber || "").startsWith("EV");
 
-                    <div className="text-right">
-                      <p className="text-sm font-bold text-zinc-100">
-                        ₹{item.totalAmount ?? item.hourlyRate ?? 0}
-                      </p>
-                      <span className="inline-block mt-1 rounded-full bg-zinc-800 px-2.5 py-0.5 text-[10px] font-medium text-zinc-300">
-                        Completed
-                      </span>
+                  return (
+                    <div
+                      key={item._id}
+                      onClick={() => setSelectedBooking(item)}
+                      className="rounded-2xl border border-zinc-800 bg-[#111622] hover:border-emerald-500/40 p-4 flex items-center justify-between transition cursor-pointer"
+                    >
+                      <div className="flex items-center gap-3">
+                        <div className="h-9 w-9 rounded-xl bg-zinc-900 border border-zinc-800 flex items-center justify-center text-emerald-400">
+                          {isEv ? <Zap className="h-4 w-4 text-amber-400" /> : <Car className="h-4 w-4" />}
+                        </div>
+                        <div>
+                          <p className="text-sm font-semibold text-zinc-100">{item.buildingName}</p>
+                          <p className="text-xs text-zinc-400">
+                            {isEv ? "EV Charging" : "Parking"} •{" "}
+                            {item.hoursParked ? `${item.hoursParked} hr` : `${item.estimatedDuration || 1} hr`}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="text-right">
+                        <p className="text-sm font-bold text-zinc-100">
+                          ₹{item.totalAmount ?? item.hourlyRate ?? 0}
+                        </p>
+                        <span className="inline-block mt-1 rounded-full bg-zinc-800 px-2.5 py-0.5 text-[10px] font-medium text-zinc-300">
+                          Completed
+                        </span>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -743,7 +1050,9 @@ export default function DriverDashboard({ user, onUserUpdate, onLogout, onNotify
               ) : (
                 <form onSubmit={handleConfirmDeleteAccount} className="space-y-4">
                   <p className="text-xs text-zinc-400">
-                    Enter the 6-digit code sent to <strong className="text-zinc-200">{user.email}</strong>. This action cannot be undone.
+                    Enter the 6-digit code sent to{" "}
+                    <strong className="text-zinc-200">{user.email}</strong>. This action cannot be
+                    undone.
                   </p>
                   <div className="relative">
                     <KeyRound className="absolute left-3 top-3 h-4 w-4 text-red-400" />

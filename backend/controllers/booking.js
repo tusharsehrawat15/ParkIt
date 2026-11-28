@@ -32,7 +32,15 @@ async function handleLockSlot(req, res) {
       return res.status(404).json({ error: "Parking slot not found" });
     }
 
-    if (slot.status !== "AVAILABLE") {
+    if (slot.status === "LOCKED") {
+      // Check if the Redis lock is still active and owned by someone else
+      const existingLockOwner = await getSlotLockOwner(slotId);
+      if (existingLockOwner && existingLockOwner !== driverId) {
+        return res.status(409).json({ error: "Slot is currently LOCKED by another driver" });
+      }
+      // Expired or owned by the same driver — release so it can be re-acquired cleanly
+      await releaseSlotLock(slotId);
+    } else if (slot.status !== "AVAILABLE") {
       return res.status(409).json({ error: `Slot is currently ${slot.status}` });
     }
 
@@ -42,6 +50,7 @@ async function handleLockSlot(req, res) {
     }
 
     slot.status = "LOCKED";
+    slot.lockExpiresAt = new Date(Date.now() + 300 * 1000);
     await slot.save();
 
     const io = getIO();
@@ -76,7 +85,7 @@ async function handleConfirmBooking(req, res) {
 
     const lockOwnerId = await getSlotLockOwner(slotId);
     if (!lockOwnerId) {
-      await Slot.findByIdAndUpdate(slotId, { status: "AVAILABLE" });
+      await Slot.findByIdAndUpdate(slotId, { status: "AVAILABLE", lockExpiresAt: null });
       return res.status(400).json({
         error: "Your 5-minute reservation lock expired. Please try again.",
       });
@@ -110,6 +119,7 @@ async function handleConfirmBooking(req, res) {
 
     slot.status = "BOOKED";
     slot.bookedBy = driver._id;
+    slot.lockExpiresAt = null;
     await slot.save();
 
     await releaseSlotLock(slotId);
@@ -180,7 +190,7 @@ async function handleReleaseSlot(req, res) {
 
     const slot = await Slot.findByIdAndUpdate(
       slotId,
-      { status: "AVAILABLE", bookedBy: null },
+      { status: "AVAILABLE", bookedBy: null, lockExpiresAt: null },
       { new: true }
     );
 
@@ -227,9 +237,12 @@ async function handleReleaseSlot(req, res) {
 
 async function handleGetDriverHistory(req, res) {
   try {
-    const history = await Booking.find({ driverId: req.user.id }).sort({
-      createdAt: -1,
-    });
+    const history = await Booking.find({ driverId: req.user.id })
+      .populate("ownerId", "name buildingName locality city")
+      .populate("slotId", "slotType")
+      .sort({
+        createdAt: -1,
+      });
     return res.status(200).json({ count: history.length, history });
   } catch (error) {
     return res.status(500).json({ error: error.message });
@@ -239,7 +252,8 @@ async function handleGetDriverHistory(req, res) {
 async function handleGetOwnerHistory(req, res) {
   try {
     const history = await Booking.find({ ownerId: req.user.id })
-      .populate("driverId", "name email")
+      .populate("driverId", "name vehicleNumber")
+      .populate("slotId", "slotType")
       .sort({ createdAt: -1 });
     return res.status(200).json({ count: history.length, history });
   } catch (error) {

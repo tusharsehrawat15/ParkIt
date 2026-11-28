@@ -1,5 +1,7 @@
 const User = require("../models/user");
 const Slot = require("../models/slot");
+const Booking = require("../models/booking");
+const Waitlist = require("../models/waitlist");
 const Otp = require("../models/otp");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
@@ -336,6 +338,43 @@ async function handleUpdateProfile(req, res) {
     }
 
     await user.save();
+
+    // Cascade updated building details to all slots, active bookings, and active waitlist entries
+    if (user.role === "OWNER") {
+      const buildingFields = {
+        buildingName: user.buildingName,
+        locality: user.locality,
+        city: user.city,
+      };
+      const ownerSlots = await Slot.find({ ownerId: user._id }).select("_id");
+      const ownerSlotIds = ownerSlots.map((s) => s._id);
+
+      await Promise.all([
+        Slot.updateMany(
+          { ownerId: user._id },
+          { $set: { ...buildingFields, buildingType: user.buildingType } }
+        ),
+        Booking.updateMany(
+          {
+            status: "ACTIVE",
+            $or: [{ ownerId: user._id }, { slotId: { $in: ownerSlotIds } }],
+          },
+          { $set: buildingFields }
+        ),
+        Waitlist.updateMany(
+          { ownerId: user._id, status: { $in: ["WAITING", "READY"] } },
+          { $set: buildingFields }
+        ),
+      ]);
+
+      const io = getIO();
+      if (io) {
+        io.emit("slotsUpdated");
+        io.emit("bookingsUpdated");
+        io.emit("waitlistUpdated");
+      }
+    }
+
     const safeUser = user.toObject();
     delete safeUser.password;
 

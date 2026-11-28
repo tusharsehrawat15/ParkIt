@@ -40,8 +40,10 @@ function formatDuration(booking) {
 export default function BookingDetailsModal({ booking, currentUser, onClose }) {
   if (!booking) return null;
 
-  const isEv = (booking.slotType || booking.slotId?.slotType) === "EV";
-  const slotNumber = booking.slotNumber || booking.slotId?.slotNumber || "—";
+  const isEv =
+  (booking.slotType || booking.slotId?.slotType) === "EV" ||
+  String(booking.slotNumber || booking.slotId?.slotNumber || "").startsWith("EV");
+  
 
   // Driver details (supports populated driverId or flat fields)
   const driverName =
@@ -104,7 +106,7 @@ export default function BookingDetailsModal({ booking, currentUser, onClose }) {
               <div>
                 <h3 className="text-sm font-bold text-zinc-100">Booking Receipt</h3>
                 <p className="text-[11px] text-zinc-400">
-                  {isEv ? "EV Charging" : "Parking"} • Slot {slotNumber}
+                    {isEv ? "EV Charging" : "Parking"}
                 </p>
               </div>
             </div>

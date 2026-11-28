@@ -41,8 +41,18 @@ async function handleMarkAllRead(req, res) {
   }
 }
 
+async function handleClearNotifications(req, res) {
+  try {
+    await Notification.deleteMany({ userId: req.user.id });
+    return res.status(200).json({ message: "Notifications cleared" });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+}
+
 module.exports = {
   createNotification,
   handleGetNotifications,
   handleMarkAllRead,
+  handleClearNotifications,
 };

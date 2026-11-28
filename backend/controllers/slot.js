@@ -8,6 +8,16 @@ const {
   notifyNearbyWaitlistedDrivers,
 } = require("./waitlist");
 
+async function releaseExpiredLocks() {
+  await Slot.updateMany(
+    {
+      status: "LOCKED",
+      $or: [{ lockExpiresAt: { $lte: new Date() } }, { lockExpiresAt: null }],
+    },
+    { $set: { status: "AVAILABLE", lockExpiresAt: null } }
+  );
+}
+
 async function handleCreateSlot(req, res) {
   try {
     const { slotNumber, slotType, hourlyRate } = req.body || {};
@@ -63,6 +73,7 @@ async function handleCreateSlot(req, res) {
 async function handleGetAllSlots(req, res) {
   try {
     await expireStaleReadyWaitlists();
+    await releaseExpiredLocks();
 
     const filter = {};
     if (req.query.slotType) filter.slotType = req.query.slotType;
@@ -87,7 +98,7 @@ async function handleGetAllSlots(req, res) {
 
     let slots;
     if (hasCoords) {
-      const maxDistance = req.query.maxDistance ? Number(req.query.maxDistance) : 50000; // default 50 km
+      const maxDistance = req.query.maxDistance ? Number(req.query.maxDistance) : 10000; // default 10 km
       slots = await Slot.aggregate([
         {
           $geoNear: {
@@ -143,6 +154,7 @@ async function handleGetAllSlots(req, res) {
 async function handleGetOwnerSlots(req, res) {
   try {
     await expireStaleReadyWaitlists();
+    await releaseExpiredLocks();
     const slots = await Slot.find({ ownerId: req.user.id }).sort({ slotNumber: 1 });
     return res.status(200).json({ count: slots.length, slots });
   } catch (error) {
@@ -152,6 +164,8 @@ async function handleGetOwnerSlots(req, res) {
 
 async function handleSyncOwnerServices(req, res) {
   try {
+    await releaseExpiredLocks();
+
     const ownerId = req.user.id;
     const { slotType, hourlyRate, totalSlots } = req.body;
 
@@ -165,7 +179,13 @@ async function handleSyncOwnerServices(req, res) {
     }
 
     const ownerHasCoords = owner.location?.coordinates?.length === 2;
-    const updateFields = { hourlyRate: Number(hourlyRate) };
+    const updateFields = {
+      hourlyRate: Number(hourlyRate),
+      buildingName: owner.buildingName,
+      locality: owner.locality,
+      city: owner.city,
+      buildingType: owner.buildingType,
+    };
     if (ownerHasCoords) {
       updateFields.location = owner.location;
     }
@@ -178,7 +198,11 @@ async function handleSyncOwnerServices(req, res) {
     if (totalSlots > currentCount) {
       const slotsToAdd = totalSlots - currentCount;
       const newSlotsData = [];
-      const nextIndex = currentCount + 1;
+      const maxNum = currentSlots.reduce((max, s) => {
+        const n = parseInt(String(s.slotNumber).split("-")[1], 10);
+        return Number.isNaN(n) ? max : Math.max(max, n);
+      }, 0);
+      const nextIndex = maxNum + 1;
 
       for (let i = 0; i < slotsToAdd; i++) {
         const slotNumId = `${slotType === "EV" ? "EV" : "B1"}-${String(nextIndex + i).padStart(2, "0")}`;

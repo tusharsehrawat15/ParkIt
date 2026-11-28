@@ -65,6 +65,7 @@ async function expireStaleReadyWaitlists() {
 
       if (slot && slot.status === "LOCKED") {
         slot.status = "AVAILABLE";
+        slot.lockExpiresAt = null;
         await slot.save();
 
         // Offer to next driver in this building; if none, alert same city+locality waiters
@@ -105,11 +106,12 @@ async function promoteNextWaitlistDriver(ownerId, slotType, slotId) {
   const locked = await acquireSlotLock(String(slotId), String(nextEntry.driverId), 300);
   if (!locked) return false;
 
-  await Slot.findByIdAndUpdate(slotId, { status: "LOCKED" });
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+  await Slot.findByIdAndUpdate(slotId, { status: "LOCKED", lockExpiresAt: expiresAt });
 
   nextEntry.status = "READY";
   nextEntry.assignedSlotId = slotId;
-  nextEntry.expiresAt = new Date(Date.now() + 5 * 60 * 1000);
+  nextEntry.expiresAt = expiresAt;
   await nextEntry.save();
 
   await createNotification({
@@ -231,7 +233,7 @@ async function handleLeaveWaitlist(req, res) {
       await releaseSlotLock(String(slotId));
       const freedSlot = await Slot.findByIdAndUpdate(
         slotId,
-        { status: "AVAILABLE" },
+        { status: "AVAILABLE", lockExpiresAt: null },
         { new: true }
       );
       if (freedSlot) {

@@ -1,17 +1,25 @@
-const BREVO_API_URL = "https://api.brevo.com/v3/smtp/email";
+const BREVO_ENDPOINT = "https://api.brevo.com/v3/smtp/email";
 
-async function sendOtpEmail({ to, otp, subject = "Your ParkIt Verification Code" }) {
-  const apiKey = process.env.BREVO_API_KEY;
-  const senderEmail = process.env.EMAIL_USER;
+async function sendOtpEmail(arg1, otpArg) {
+  const isObject = typeof arg1 === "object" && arg1 !== null;
+  const rawEmail = isObject ? (arg1.to ?? arg1.email) : arg1;
+  const otp = isObject ? arg1.otp : otpArg;
 
+  const recipientEmail = typeof rawEmail === "string" ? rawEmail.trim() : "";
+  const apiKey = typeof process.env.BREVO_API_KEY === "string" ? process.env.BREVO_API_KEY.trim() : "";
+  const senderEmail = typeof process.env.EMAIL_USER === "string" ? process.env.EMAIL_USER.trim() : "";
+
+  if (!recipientEmail) {
+    throw new Error("Recipient email is missing in controller/request payload");
+  }
   if (!apiKey) {
-    throw new Error("Missing BREVO_API_KEY environment variable");
+    throw new Error("BREVO_API_KEY is missing in Render environment");
   }
   if (!senderEmail) {
-    throw new Error("Missing EMAIL_USER environment variable");
+    throw new Error("EMAIL_USER is missing in Render environment");
   }
 
-  const response = await fetch(BREVO_API_URL, {
+  const response = await fetch(BREVO_ENDPOINT, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -22,23 +30,16 @@ async function sendOtpEmail({ to, otp, subject = "Your ParkIt Verification Code"
         name: "ParkIt",
         email: senderEmail,
       },
-      to: [{ email: to }],
-      subject,
-      htmlContent: `
-        <div style="font-family: Arial, sans-serif; line-height: 1.5;">
-          <h2>ParkIt Email Verification</h2>
-          <p>Your 6-digit verification code is:</p>
-          <p style="font-size: 24px; font-weight: bold; letter-spacing: 4px;">${otp}</p>
-          <p>This code will expire shortly. If you didn't request this, you can ignore this email.</p>
-        </div>
-      `,
+      to: [{ email: recipientEmail }],
+      subject: "Your ParkIt Verification Code",
+      htmlContent: `<p>Your 6-digit ParkIt verification code is: <strong>${otp}</strong></p>`,
       textContent: `Your ParkIt verification code is: ${otp}`,
     }),
   });
 
   if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`Brevo API request failed (${response.status}): ${errorBody}`);
+    const errorText = await response.text();
+    throw new Error(`Brevo API error (${response.status}): ${errorText}`);
   }
 
   return response.json();

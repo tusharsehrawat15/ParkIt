@@ -15,6 +15,7 @@ import {
 import { apiRequest } from "../lib/api";
 import LocationPickerMap from "./LocationPickerMap";
 import ParkItLogo from "./ParkItLogo";
+import InstallAppButton from "./InstallAppButton";
 
 export default function AuthPage({ onAuthSuccess }) {
   const [mode, setMode] = useState("login"); // "login" | "signup" | "forgot"
@@ -183,6 +184,9 @@ export default function AuthPage({ onAuthSuccess }) {
           <p className="text-sm text-zinc-400 mt-1">
             Real-time smart parking & EV charging
           </p>
+          <div className="mt-3 flex justify-center">
+            <InstallAppButton />
+          </div>
         </div>
 
         {/* Mode Switcher (hidden in Forgot Password mode) */}

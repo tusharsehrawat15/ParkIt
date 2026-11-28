@@ -2,16 +2,15 @@ import { useEffect, useState } from "react";
 
 export default function InstallAppButton() {
   const [deferredPrompt, setDeferredPrompt] = useState(null);
-  const [isInstalled, setIsInstalled] = useState(false);
+  const [isStandalone, setIsStandalone] = useState(false);
 
   useEffect(() => {
     const standalone =
       window.matchMedia("(display-mode: standalone)").matches ||
       window.navigator.standalone === true;
-    if (standalone) {
-      setIsInstalled(true);
-      return;
-    }
+
+    setIsStandalone(standalone);
+    if (standalone) return;
 
     const handleBeforeInstallPrompt = (e) => {
       e.preventDefault();
@@ -19,7 +18,7 @@ export default function InstallAppButton() {
     };
 
     const handleAppInstalled = () => {
-      setIsInstalled(true);
+      setIsStandalone(true);
       setDeferredPrompt(null);
     };
 
@@ -33,19 +32,25 @@ export default function InstallAppButton() {
   }, []);
 
   const handleInstallClick = async () => {
-    if (!deferredPrompt) return;
+    if (!deferredPrompt) {
+      alert(
+        "To install ParkIt: open browser menu (⋮ or Share) and select 'Install app' or 'Add to Home Screen'."
+      );
+      return;
+    }
+
     deferredPrompt.prompt();
     await deferredPrompt.userChoice;
     setDeferredPrompt(null);
   };
 
-  if (isInstalled || !deferredPrompt) return null;
+  if (isStandalone) return null;
 
   return (
     <button
       type="button"
       onClick={handleInstallClick}
-      className="px-4 py-2 rounded-lg bg-emerald-500 text-black font-semibold hover:bg-emerald-400 transition"
+      className="px-3.5 py-1.5 rounded-lg bg-emerald-500 text-black text-sm font-semibold hover:bg-emerald-400 transition cursor-pointer"
     >
       Install App
     </button>

@@ -21,7 +21,7 @@ import {
   KeyRound,
   Lock,
 } from "lucide-react";
-import { apiRequest } from "../lib/api";
+import { apiRequest, API_BASE_URL } from "../lib/api";
 import BookSlotView from "./BookSlotView";
 import BookingDetailsModal from "./BookingDetailsModal";
 
@@ -136,7 +136,7 @@ export default function DriverDashboard({ user, onUserUpdate, onLogout, onNotify
   }, [fetchDashboardData]);
 
   useEffect(() => {
-    const socket = io();
+    const socket = io(API_BASE_URL || undefined, { withCredentials: true });
     socket.on("slotsUpdated", fetchDashboardData);
     socket.on("bookingsUpdated", fetchDashboardData);
     socket.on("waitlistUpdated", fetchDashboardData);

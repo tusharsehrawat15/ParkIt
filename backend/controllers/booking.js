@@ -179,11 +179,14 @@ async function handleReleaseSlot(req, res) {
     }
 
     const endTime = new Date();
-    const durationMs = endTime - new Date(activeBooking.startTime);
-    const hoursParked = Math.max(1, Math.ceil(durationMs / (1000 * 60 * 60)));
-    const totalAmount = hoursParked * activeBooking.hourlyRate;
+    const durationMs = Math.max(0, endTime - new Date(activeBooking.startTime));
+    const minutesParked = Math.ceil(durationMs / (1000 * 60));
+    const billableMinutes = Math.max(30, minutesParked);
+    const hoursParked = Number((billableMinutes / 60).toFixed(2));
+    const totalAmount = Math.round((billableMinutes / 60) * activeBooking.hourlyRate);
 
     activeBooking.endTime = endTime;
+    activeBooking.hoursParked = hoursParked;
     activeBooking.totalAmount = totalAmount;
     activeBooking.status = "COMPLETED";
     await activeBooking.save();
@@ -226,6 +229,8 @@ async function handleReleaseSlot(req, res) {
 
     return res.status(200).json({
       message: "Checked out successfully. Slot is now AVAILABLE.",
+      minutesParked,
+      billableMinutes,
       hoursParked,
       totalAmount,
       booking: activeBooking,

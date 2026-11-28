@@ -21,7 +21,7 @@ import {
   Lock,
   KeyRound,
 } from "lucide-react";
-import { apiRequest } from "../lib/api";
+import { apiRequest, API_BASE_URL } from "../lib/api";
 import BookingDetailsModal from "./BookingDetailsModal";
 import BuildingLocationPicker from "./BuildingLocationPicker";
 
@@ -141,7 +141,7 @@ export default function OwnerDashboard({ user, onUserUpdate, onLogout, onNotify 
   }, [fetchOwnerData]);
 
   useEffect(() => {
-    const socket = io();
+    const socket = io(API_BASE_URL || undefined, { withCredentials: true });
     socket.on("slotsUpdated", fetchOwnerData);
     socket.on("bookingsUpdated", fetchOwnerData);
     socket.on("waitlistUpdated", fetchOwnerData);

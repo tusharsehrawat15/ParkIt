@@ -8,6 +8,13 @@ const jwt = require("jsonwebtoken");
 const { getIO } = require("../socket");
 const { sendOtpEmail } = require("../utils/mailer");
 
+const isProd = process.env.NODE_ENV === "production";
+const COOKIE_OPTIONS = {
+  httpOnly: true,
+  sameSite: isProd ? "none" : "lax",
+  secure: isProd,
+};
+
 function parseGeoPoint(lat, lng) {
   const numLat = Number(lat);
   const numLng = Number(lng);
@@ -38,9 +45,7 @@ function setAuthCookie(res, user) {
   );
 
   res.cookie("token", token, {
-    httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    ...COOKIE_OPTIONS,
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
 }
@@ -315,7 +320,7 @@ async function handleUpdateBuildingLocation(req, res) {
 
 // 8. Logout
 async function handleUserLogout(req, res) {
-  res.clearCookie("token");
+  res.clearCookie("token", COOKIE_OPTIONS);
   return res.status(200).json({ message: "Logged out successfully" });
 }
 
@@ -433,7 +438,7 @@ async function handleDeleteAccount(req, res) {
     await Otp.deleteMany({ email: user.email });
     await User.findByIdAndDelete(user._id);
 
-    res.clearCookie("token");
+    res.clearCookie("token", COOKIE_OPTIONS);
     return res.status(200).json({ message: "Account permanently deleted" });
   } catch (error) {
     return res.status(500).json({ error: error.message });

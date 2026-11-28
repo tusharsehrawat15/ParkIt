@@ -3,15 +3,19 @@ const { Server } = require("socket.io");
 let io = null;
 
 function initSocket(server) {
+  const allowedOrigins = (process.env.CLIENT_URL || "http://localhost:5173")
+    .split(",")
+    .map((origin) => origin.trim().replace(/\/$/, ""));
+
   io = new Server(server, {
     cors: {
-      origin: "*",
+      origin: allowedOrigins,
       methods: ["GET", "POST", "PATCH", "DELETE"],
+      credentials: true,
     },
   });
 
   io.on("connection", (socket) => {
-    // Each logged-in user joins their own room for personal notifications
     socket.on("register", (userId) => {
       if (userId) {
         socket.join(String(userId));

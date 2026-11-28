@@ -1,12 +1,12 @@
 import { useEffect, useState, useCallback } from "react";
 import { Loader2 } from "lucide-react";
 import { io } from "socket.io-client";
-import { apiRequest } from "./lib/api";
 import AuthPage from "./components/AuthPage";
 import ParkItLogo from "./components/ParkItLogo";
 import DriverDashboard from "./components/DriverDashboard";
 import NotificationBell from "./components/NotificationBell";
 import OwnerDashboard from "./components/OwnerDashboard";
+import { apiRequest, API_BASE_URL } from "./lib/api";
 
 function formatNotification(n) {
   const created = n.createdAt ? new Date(n.createdAt) : new Date();
@@ -55,7 +55,7 @@ export default function App() {
 
     fetchNotifications();
 
-    const socket = io();
+    const socket = io(API_BASE_URL || undefined, { withCredentials: true });
     const registerUser = () => socket.emit("register", userId);
 
     socket.on("connect", registerUser);
